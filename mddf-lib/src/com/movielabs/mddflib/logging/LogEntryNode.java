@@ -36,7 +36,7 @@ public class LogEntryNode extends LogEntry {
 	/**
 	 * Column separator to use when generating CSV file
 	 */
-	public static String colSep = "\t";
+	public static String colSep = ",";
 	private static int cCnt;
 
 	static {
