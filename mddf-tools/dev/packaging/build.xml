@@ -67,8 +67,8 @@
 		<delete dir="${appPack.dir}/package" />
 		<mkdir dir="${appPack.dir}/package" />
 		<copy todir="${appPack.dir}/package">
-			<fileset dir="${proj.appDev}/package">
-				<include name="**/*" />
+			<fileset dir="${proj.appDev}">
+				<include name="package/**/*" />
 			</fileset>
 		</copy>
 
