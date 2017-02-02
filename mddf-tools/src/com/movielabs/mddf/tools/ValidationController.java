@@ -144,6 +144,15 @@ public class ValidationController {
 				break;
 			}
 		}
+		if(cmdLine.hasOption("s")){
+                      ValidationController controller = new ValidationController(Context.MANIFEST, logger);
+                      try{
+                        File scriptPath = new File(cmdLine.getOptionValue("s"));
+                        controller.runScript(scriptPath);
+                      } catch(IOException e){
+                          e.printStackTrace();
+                      }
+        }
 	}
 
 	/**
