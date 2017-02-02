@@ -206,6 +206,20 @@
 
 	</target>
 
+ 	<target name="deploy-cmm-cmd" depends="setup-staging-area, do-compile, deploy-init">
+ 		<copy todir="${appPack.dir}/deploy/resources">
+			<fileset dir="${proj.rsrcFolder}">
+				<include name="**/*" />
+			</fileset>
+		</copy>
+        <jar destfile="${appPack.dir}/deploy/CMMValidator.jar" basedir="${appPack.dir}/build/classes">
+        	<zipgroupfileset dir="${appPack.dir}/dist/" includes="libs/*.jar"/>
+            <manifest>
+                <attribute name="Main-Class" value="com.movielabs.mddf.tools.ValidationController"/>
+            </manifest>
+        </jar>
+    </target>
+
 	<target name="deploy-all"
 		depends="setup-staging-area, do-compile, init-fx-tasks, deploy-init">
 		<antcall target="deploy-tool">
