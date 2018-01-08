@@ -32,13 +32,13 @@ import javax.swing.JMenu;
 import javax.swing.JToolBar;
 import javax.swing.SwingConstants;
 import javax.swing.UIManager;
+import javax.swing.filechooser.FileNameExtensionFilter;
 
 /**
  * @author L. Levin, Critical Architectures LLC
  *
  */
-public class ManifestTool extends ValidatorTool {
-	public static final String MANIFEST_APP_VER = "v1.2.1";
+public class ManifestTool extends ValidatorTool { 
 	private static final String MANIFEST_DOC_VER = "v1.2.1";
 
 
@@ -68,9 +68,9 @@ public class ManifestTool extends ValidatorTool {
 	 * @param context
 	 */
 	public ManifestTool() {
-		super(Context.MANIFEST);
-		super.appVersion = MANIFEST_APP_VER; 
+		super(Context.MANIFEST); 
 		htmlDocUrl = "http://www.movielabs.com/md/manifest/validator/" + MANIFEST_DOC_VER + "/";
+		inputFileFilter = new FileNameExtensionFilter("XML file", "xml");
 	}
 
 	/**

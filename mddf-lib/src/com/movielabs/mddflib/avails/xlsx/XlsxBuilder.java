@@ -23,9 +23,6 @@
 package com.movielabs.mddflib.avails.xlsx;
 
 import java.io.BufferedReader;
-import java.io.FileNotFoundException;
-import java.io.FileOutputStream;
-import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.text.DecimalFormat;
@@ -33,15 +30,7 @@ import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.apache.poi.ss.usermodel.Cell;
-import org.apache.poi.ss.usermodel.CellStyle;
-import org.apache.poi.ss.usermodel.Row;
-import org.apache.poi.ss.usermodel.Sheet;
-import org.apache.poi.xssf.usermodel.XSSFCellStyle;
-import org.apache.poi.xssf.usermodel.XSSFColor;
-import org.apache.poi.xssf.usermodel.XSSFFont;
 import org.apache.poi.xssf.usermodel.XSSFSheet;
-import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.jdom2.Attribute;
 import org.jdom2.Element;
 import org.jdom2.Namespace;
@@ -50,8 +39,10 @@ import org.jdom2.xpath.XPathExpression;
 import org.jdom2.xpath.XPathFactory;
 
 import com.movielabs.mddf.MddfContext;
-import com.movielabs.mddflib.avails.xlsx.AvailsSheet.Version;
+import com.movielabs.mddflib.avails.xml.AvailsSheet.Version;
+import com.movielabs.mddflib.avails.xml.MetadataBuilder;
 import com.movielabs.mddflib.logging.LogMgmt;
+import com.movielabs.mddflib.util.xml.SchemaWrapper;
 import com.movielabs.mddflib.util.xml.XmlIngester;
 
 import net.sf.json.JSONArray;
@@ -109,33 +100,38 @@ import net.sf.json.JSONObject;
  */
 public class XlsxBuilder {
 	private static final String DURATION_REGEX = "P([0-9]+Y)?([0-9]+M)?([0-9]+D)?(T([0-9]+H)?([0-9]+M)?([0-9]+(\\.[0-9]+)?S)?)?";
+	private static final String DATETIME_REGEX = "[\\d]{4}-[\\d]{2}-[\\d]{2}T[\\d:\\.]+";
+	private static final String CONTEXT_DELIM = "#";
+	private static final String FUNCTION_IDENTIFIER = "%FUNCTION";
 	private static DecimalFormat durFieldFmt = new DecimalFormat("00");
-	private static JSONObject mappings;
+	protected static JSONObject mappings;
 	private static Pattern p_xsDuration;
 	private static String warnMsg1 = "XLSX xfer dropping additional XYZ values";
 	private static String warnDetail1 = "The Excel version of Avails only allows 1 value for this field. Additional XML elements will be ignored";
+	private static Pattern p_xsDateTime;
 	protected XPathFactory xpfac = XPathFactory.instance();
 	private LogMgmt logger;
 	private String rootPrefix = "avails:";
 
-	private int logMsgDefaultTag = LogMgmt.TAG_XLSX;
+	private int logMsgDefaultTag = LogMgmt.TAG_XLATE;
 	protected String logMsgSrcId = "XlsxBuilder";
 	private String MD_VER;
 	private String MDMEC_VER;
 	private Namespace mdNSpace;
+	private SchemaWrapper mdSchema;
 	private String AVAIL_VER;
 	private Namespace availsNSpace;
+	private SchemaWrapper availsSchema;
 	private Element rootEl;
 	private ArrayList<Element> tvAvailsList;
 	private ArrayList<Element> movieAvailsList;
 	private HashSet<XPathExpression<?>> allowsMultiples = new HashSet<XPathExpression<?>>();
-	private XSSFWorkbook workbook;
+	private TemplateWorkBook workbook;
 	private JSONObject mappingVersion;
 	private String availPrefix;
-	private String mdPrefix;
-	private Map<String, XSSFCellStyle> headerColors = new HashMap<String, XSSFCellStyle>();
-	private XSSFCellStyle defaultStyle;
-	private XSSFCellStyle headerStyleFill;
+	private String mdPrefix; 
+	private HashMap<String, JSONObject> functionList;
+	private JSONObject mappingDefs;
 
 	static {
 		/*
@@ -162,6 +158,8 @@ public class XlsxBuilder {
 		 * 
 		 */
 		p_xsDuration = Pattern.compile(DURATION_REGEX);
+		p_xsDateTime = Pattern.compile(DATETIME_REGEX);
+
 	}
 
 	/**
@@ -180,68 +178,9 @@ public class XlsxBuilder {
 		availPrefix = availsNSpace.getPrefix() + ":";
 		mdPrefix = mdNSpace.getPrefix() + ":";
 		sortAvails();
-		initializeWorkbook();
+		workbook = new TemplateWorkBook(logger);
 		addMovieAvails();
 		addTvAvails();
-	}
-
-	/**
-	 * Initialize workbook styles to match as closely as possible the 'template'
-	 * spreadsheets.
-	 */
-	private void initializeWorkbook() {
-		workbook = new XSSFWorkbook();
-		/* Initialize any styles used to make output more readable */
-		XSSFFont font = workbook.createFont();
-		font.setBold(true);
-		font.setFontHeightInPoints((short) 8);
-		XSSFColor hdrFontColor = new XSSFColor();
-		hdrFontColor.setARGBHex("FFFFFF");
-		font.setColor(hdrFontColor);
-		XSSFCellStyle headerStyle1 = workbook.createCellStyle();
-		headerStyle1.setFont(font);
-		XSSFColor c1 = new XSSFColor();
-		c1.setARGBHex("3776DB");
-		headerStyle1.setFillForegroundColor(c1);
-		headerStyle1.setFillPattern(CellStyle.SOLID_FOREGROUND);
-		headerStyle1.setAlignment(CellStyle.ALIGN_CENTER);
-		headerColors.put("Avail", headerStyle1);
-		defaultStyle = headerStyle1;
-
-		XSSFCellStyle headerStyle2 = workbook.createCellStyle();
-		headerStyle2.setFont(font);
-		XSSFColor c2 = new XSSFColor();
-		c2.setARGBHex("B54E9B");
-		headerStyle2.setFillForegroundColor(c2);
-		headerStyle2.setFillPattern(CellStyle.SOLID_FOREGROUND);
-		headerStyle2.setAlignment(CellStyle.ALIGN_CENTER);
-		headerColors.put("AvailAsset", headerStyle2);
-
-		XSSFCellStyle headerStyle3 = workbook.createCellStyle();
-		headerStyle3.setFont(font);
-		XSSFColor c3 = new XSSFColor();
-		c3.setARGBHex("38761d");
-		headerStyle3.setFillForegroundColor(c3);
-		headerStyle3.setFillPattern(CellStyle.SOLID_FOREGROUND);
-		headerStyle3.setAlignment(CellStyle.ALIGN_CENTER);
-		headerColors.put("AvailMetadata", headerStyle3);
-
-		XSSFCellStyle headerStyle4 = workbook.createCellStyle();
-		headerStyle4.setFont(font);
-		XSSFColor c4 = new XSSFColor();
-		c4.setARGBHex("85200c");
-		headerStyle4.setFillForegroundColor(c4);
-		headerStyle4.setFillPattern(CellStyle.SOLID_FOREGROUND);
-		headerStyle4.setAlignment(CellStyle.ALIGN_CENTER);
-		headerColors.put("AvailTrans", headerStyle4);
-
-		headerStyleFill = workbook.createCellStyle();
-		headerStyleFill.setFont(font);
-		XSSFColor c5 = new XSSFColor();
-		c5.setARGBHex("0c0c0c");
-		headerStyleFill.setFillForegroundColor(c5);
-		headerStyleFill.setFillPattern(CellStyle.SOLID_FOREGROUND);
-		headerStyleFill.setAlignment(CellStyle.ALIGN_CENTER);
 	}
 
 	/**
@@ -251,7 +190,7 @@ public class XlsxBuilder {
 		if (movieAvailsList.isEmpty()) {
 			return;
 		}
-		addAvails("Movie", movieAvailsList);
+		addAvails("Movies", movieAvailsList);
 	}
 
 	/**
@@ -270,16 +209,12 @@ public class XlsxBuilder {
 	}
 
 	private void addAvails(String category, List<Element> availList) {
-		XSSFSheet sheet = workbook.createSheet(category);
 		// get mappings that will be used for this specific sheet..
-		JSONObject mappingDefs = mappingVersion.getJSONObject(category);
-		List<String> colIdList = new ArrayList<String>();
+		mappingDefs = mappingVersion.getJSONObject(category);
+		ArrayList<String> colIdList = new ArrayList<String>();
 		colIdList.addAll(mappingDefs.keySet());
-		/*
-		 * First add TV-specific headers matching the template version being
-		 * used
-		 */
-		addHeaderRows(sheet, colIdList);
+
+		XSSFSheet sheet = workbook.addSheet(category, colIdList);
 
 		/* Initialize xpaths that implement the data mappings */
 		Map<String, Map<String, List<XPathExpression>>> xpathSets = initializeMappings(mappingDefs);
@@ -294,6 +229,7 @@ public class XlsxBuilder {
 			 */
 			Map<String, List<XPathExpression>> availMappings = xpathSets.get("Avail");
 			Map<String, String> commonData = extractData(availEl, availMappings, "");
+			Set<String> foo = commonData.keySet();
 			/*
 			 * now identify each Asset that is a child of this Avail and prepare
 			 * its data.
@@ -336,7 +272,15 @@ public class XlsxBuilder {
 				for (int tIdx = 0; tIdx < perTransData.size(); tIdx++) {
 					Map<String, String> rowData = perTransData.get(tIdx);
 					rowData.putAll(assetData);
-					addRow(colIdList, rowData, sheet);
+					/*
+					 * Special Case: AvailID is unique per row and comes from
+					 * the TransactionID. The problem is the way the syntax of
+					 * the Mappings.json and the way this code groups xpaths by
+					 * the Excel row-1 column header. So...
+					 */
+					String trueAvailID = rowData.get("AvailTrans:Avail/AvailID");
+					rowData.put("Avail:AvailID", trueAvailID);
+					workbook.addDataRow(rowData, sheet);
 				}
 			}
 		}
@@ -356,9 +300,21 @@ public class XlsxBuilder {
 		Iterator<String> keyIt = mappings.keySet().iterator();
 		while (keyIt.hasNext()) {
 			String mappingKey = keyIt.next();
+			if (mappingKey.contains(FUNCTION_IDENTIFIER)) {
+				try {
+					String value = processFunction(mappingKey, baseEl, context);
+					if (value != null) {
+						String colKey = mappingKey.replace(FUNCTION_IDENTIFIER, "");
+						dataMap.put(colKey, value);
+					}
+				} catch (Exception e) {
+					e.printStackTrace();
+				}
+				continue;
+			}
 			List<XPathExpression> xpeList = null;
-			if (mappingKey.contains("#")) {
-				String[] parts = mappingKey.split("#");
+			if (mappingKey.contains(CONTEXT_DELIM)) {
+				String[] parts = mappingKey.split(CONTEXT_DELIM);
 				if (parts[1].equals(context)) {
 					xpeList = mappings.get(mappingKey);
 					mappingKey = parts[0];
@@ -407,12 +363,7 @@ public class XlsxBuilder {
 				}
 				if (nextValue != null) {
 					matchCnt++;
-					/*
-					 * check for special cases where value has to be translated.
-					 * This mainly happens with durations where XSD specifies
-					 * xs:duration syntax.
-					 */
-					nextValue = convertDuration(nextValue);
+					nextValue = convertValue(nextValue, target);
 					if (matchCnt == 1) {
 						value = nextValue;
 					} else {
@@ -433,11 +384,12 @@ public class XlsxBuilder {
 	 */
 	private String extractSingleton(XPathExpression xpe, Element baseEl, String mappingKey) {
 		String value = null;
+		Object target = null;
 		List targetList = xpe.evaluate(baseEl);
 		int matchCnt = 0;
 		if (targetList != null && (!targetList.isEmpty())) {
 			for (int i = 0; i < targetList.size(); i++) {
-				Object target = targetList.get(i);
+				target = targetList.get(i);
 				if (target instanceof Element) {
 					matchCnt++;
 					Element targetEl = (Element) target;
@@ -445,7 +397,7 @@ public class XlsxBuilder {
 						value = targetEl.getTextNormalize();
 					} else if (matchCnt > 1) {
 						String msg = warnMsg1.replace("XYZ", mappingKey);
-						logger.logIssue(LogMgmt.TAG_AVAIL, LogMgmt.LEV_WARN, targetEl, msg, warnDetail1, null,
+						logger.logIssue(logMsgDefaultTag, LogMgmt.LEV_WARN, targetEl, msg, warnDetail1, null,
 								logMsgSrcId);
 					}
 				} else if (target instanceof Attribute) {
@@ -456,23 +408,256 @@ public class XlsxBuilder {
 					} else if (matchCnt > 1) {
 						Element targetEl = targetAt.getParent();
 						String msg = warnMsg1.replace("XYZ", mappingKey);
-						logger.logIssue(LogMgmt.TAG_AVAIL, LogMgmt.LEV_WARN, targetEl, msg, warnDetail1, null,
+						logger.logIssue(logMsgDefaultTag, LogMgmt.LEV_WARN, targetEl, msg, warnDetail1, null,
 								logMsgSrcId);
 					}
 				}
 
 			}
 			if (value != null) {
-				/*
-				 * check for special cases where value has to be translated.
-				 * This mainly happens with durations where XSD specifies
-				 * xs:duration syntax.
-				 */
-				value = convertDuration(value);
+				value = convertValue(value, target);
 			}
 		}
 		return value;
+	}
 
+	/**
+	 * @param mappingKey
+	 * @param baseEl
+	 * @param context
+	 * @return
+	 */
+	private String processFunction(String mappingKey, Element baseEl, String context) {
+		String fKey = mappingKey.replaceAll(FUNCTION_IDENTIFIER, "");
+		JSONObject functionDef = functionList.get(fKey);
+		String funcName = functionDef.getString("name");
+		switch (funcName) {
+		case "caption":
+			return func_captions(functionDef, context, baseEl);
+		case "eidr":
+			return func_eidr(functionDef, context, baseEl);
+		default:
+			throw new UnsupportedOperationException("Invalid JSON: unsupported function '" + funcName + "'");
+		}
+	}
+
+	/**
+	 * Convert all EIDR values to "eidr-5240" format. This is the default format
+	 * used for an XLSX formatted Avails.
+	 * 
+	 * @param functionDef
+	 * @param context
+	 * @param baseEl
+	 * @return
+	 */
+	private String func_eidr(JSONObject functionDef, String context, Element baseEl) {
+		JSONObject functionArgs = functionDef.getJSONObject("args");
+		String xpath = functionArgs.getString("xpath");
+		XPathExpression<Element> srcElPath = (XPathExpression<Element>) createXPath(xpath);
+		Element targetEl = srcElPath.evaluateFirst(baseEl);
+		if (targetEl == null) {
+			return null;
+		}
+		String value = targetEl.getTextNormalize();
+		// what's the namespace (i.e., encoding fmt)?
+		String namespace = MetadataBuilder.parseIdFormat(value);
+		switch (namespace) {
+		case "eidr-URN":
+			value = value.replaceFirst("urn:eidr:10.5240:", "10.5240/");
+			break;
+		case "eidr-5240":
+		default:
+			break;
+		}
+
+		return value;
+
+	}
+
+	/**
+	 * Handles special case of US caption exemptions. This function should only
+	 * be used with the <tt>AvailMetadata/CaptionIncluded</tt> field. This is
+	 * required in the US. Non-US territories may leave it blank.
+	 * <p>
+	 * Since there is no equivalent field in XML it must be inferred. The rule
+	 * is:
+	 * 
+	 * <pre>
+	 * IF (CaptionExemption is NOT set AND the Territory == 'US") THEN
+	 *     CaptionIncluded = YES
+	 * ELSE
+	 *    CaptionIncluded = NO
+	 * </pre>
+	 * 
+	 * Note that this is therefore a 'no argument' function in so far as the
+	 * functionDef goes. All that is required is the <tt>context</tt> and
+	 * <tt>baseEl</tt> parameters.
+	 * </p>
+	 * <p>
+	 * Since scope is limited to Avails applicable to US, that is a key issue.
+	 * The only territorial info in an Avails is part of a Transaction. The
+	 * problem is that there can be multiple Transactions and a single
+	 * Transaction may specify zero or many Territories. Thus, if there is
+	 * <b>any</b> Transaction row with “US” in-scope, then
+	 * <tt>CaptionIncluded</tt> should be set.
+	 * 
+	 * </p>
+	 * 
+	 * @param functionDef
+	 * @param context
+	 * @param baseEl
+	 * @return
+	 */
+	private String func_captions(JSONObject functionDef, String context, Element baseEl) {
+		// Q1: is <avails:CaptionExemption> set?
+		String ceSrcPath = null;
+		if (mappingDefs.containsKey("AvailMetadata:CaptionExemption")) {
+			ceSrcPath = mappingDefs.getString("AvailMetadata:CaptionExemption");
+		} else {
+			ceSrcPath = mappingDefs.getString("AvailMetadata:CaptionExemption" + CONTEXT_DELIM + context);
+		}
+		@SuppressWarnings("unchecked")
+		XPathExpression<Element> cePath = (XPathExpression<Element>) createXPath(ceSrcPath);
+		Element targetEl = cePath.evaluateFirst(baseEl);
+		boolean exemptionProvided;
+		if (targetEl == null) {
+			exemptionProvided = false;
+		} else {
+			String value = targetEl.getTextTrim();
+			exemptionProvided = !(value.isEmpty());
+		}
+		if (exemptionProvided) {
+			/*
+			 * CaptionIncluded should be set to NO on assumption that since a
+			 * reason is provided US must be in-scope.
+			 */
+			return "No";
+		}
+		// Need to know if US is in-scope.
+		Element parentAssetEl = baseEl.getParentElement();
+		String includedPath = "./{avail}Transaction/{avail}Territory/{md}country[. = 'US']";
+		@SuppressWarnings("unchecked")
+		XPathExpression<Element> inPath = (XPathExpression<Element>) createXPath(includedPath);
+		List<Element> inList = inPath.evaluate(parentAssetEl);
+		boolean inScope = !inList.isEmpty();
+		if (inScope) {
+			if (!exemptionProvided) {
+				return "Yes";
+			} else {
+				return "No";
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * check for special cases where value has to be translated. This happens
+	 * where XSD specifies xs:duration or xs:dateTime and the Excel specifies
+	 * some simpler format. It also covers special cases such as translating the
+	 * 'EpisodeWSP' <tt>termName</tt> attribute.
+	 * 
+	 * @param input
+	 * @return
+	 */
+	private String convertValue(String input, Object xmlSrc) {
+		if (xmlSrc instanceof Attribute) {
+			// handle attributes w/o a namespace prefix
+			Attribute xmlAtt = (Attribute) xmlSrc;
+			String name = xmlAtt.getName();
+			if (name.equals("termName")) {
+				return convertTermName(input);
+			}
+			// default handling...
+			String interim = convertDuration(input);
+			interim = convertDate(interim);
+			return interim;
+		}
+		Element xmlEl = (Element) xmlSrc;
+		String name = xmlEl.getName();
+		String nsPrefix = xmlEl.getNamespacePrefix();
+		if (nsPrefix != null) {
+			SchemaWrapper sw;
+			switch (nsPrefix) {
+			case "avails":
+				sw = availsSchema;
+				break;
+			case "md":
+				sw = mdSchema;
+				break;
+			default:
+				return input;
+			}
+			String type = sw.getType(name);
+			switch (type) {
+			case "xs:duration":
+				return convertDuration(input);
+			case "xs:dateTime":
+				return convertDate(input);
+			default:
+				return convertAltID(input, xmlSrc);
+			}
+		}
+		return input;
+	}
+
+	/**
+	 * 
+	 * @param input
+	 * @return
+	 */
+	private String convertTermName(String input) {
+		switch (input) {
+		case "EpisodeWSP":
+		case "SeasonWSP":
+			return "WSP";
+		}
+		return input;
+	}
+
+	/**
+	 * @param input
+	 * @param xmlSrc
+	 * @return
+	 */
+	private String convertAltID(String input, Object xmlSrc) {
+		if (!(xmlSrc instanceof Element)) {
+			return input;
+		}
+		Element srcEl = (Element) xmlSrc;
+		if (!srcEl.getName().equals("Identifier")) {
+			return input;
+		}
+		if (srcEl.getNamespace() != mdNSpace) {
+			return input;
+		}
+		Element parentEl = srcEl.getParentElement();
+		// check namespace
+		Element nsEl = parentEl.getChild("Namespace", mdNSpace);
+		if (nsEl == null) {
+			return input;
+		}
+		/*
+		 * If we got this far then we are dealing with some form of content
+		 * identifier. Now find out if its being used as an AltID...
+		 */
+		if (!(nsEl.getText().startsWith(MetadataBuilder.ALT_ID_NAMESPACE_PREFIX))) {
+			return input;
+		}
+		String[] parts = input.split(":", 2);
+		return parts[1];
+	}
+
+	/**
+	 * @param interim
+	 * @return
+	 */
+	private String convertDate(String input) {
+		Matcher m = p_xsDateTime.matcher(input);
+		if (!m.matches()) {
+			return input;
+		}
+		String[] parts = input.split("T");
+		return parts[0];
 	}
 
 	/**
@@ -548,23 +733,6 @@ public class XlsxBuilder {
 	}
 
 	/**
-	 * @param colIdList
-	 * @param cellData
-	 */
-	private void addRow(List<String> colIdList, Map<String, String> cellData, XSSFSheet sheet) {
-		int rowCount = sheet.getLastRowNum();
-		Row row = sheet.createRow(rowCount + 1);
-		for (int i = 0; i < colIdList.size(); i++) {
-			String colTag = colIdList.get(i);
-			String cellValue = cellData.get(colTag);
-			if ((cellValue != null) && !cellValue.isEmpty()) {
-				Cell cell = row.createCell(i);
-				cell.setCellValue(cellValue);
-			}
-		}
-	}
-
-	/**
 	 * Group, filter, and re-format the XML-to-XSLX mappings to facilitate later
 	 * usage.
 	 * 
@@ -572,6 +740,7 @@ public class XlsxBuilder {
 	 * @return
 	 */
 	private Map<String, Map<String, List<XPathExpression>>> initializeMappings(JSONObject mappingDefs) {
+		functionList = new HashMap<String, JSONObject>();
 		Map<String, Map<String, List<XPathExpression>>> organizedMappings = new HashMap<String, Map<String, List<XPathExpression>>>();
 		List<String> colIdList = new ArrayList<String>();
 		colIdList.addAll(mappingDefs.keySet());
@@ -617,18 +786,32 @@ public class XlsxBuilder {
 						mappingLists.put(colKey, xpeList);
 					}
 				} else if (value instanceof JSONObject) {
-					JSONObject mappingSet = (JSONObject) value;
-					Iterator<String> typeIt = mappingSet.keySet().iterator();
+					JSONObject innerMapping = (JSONObject) value;
+					/*
+					 * 'innerMapping' is either (a) a single %FUNCTION or (b) a
+					 * set of mappings, each one for a specific "context" (i.e.,
+					 * workType).
+					 */
+					Iterator<String> typeIt = innerMapping.keySet().iterator();
 					while (typeIt.hasNext()) {
 						String nextType = typeIt.next();
-						mapping = mappingSet.optString(nextType, "n.a");
-						if (!mapping.equals("n.a")) {
-							List<XPathExpression> xpeList = new ArrayList<XPathExpression>();
-							xpeList.add(createXPath(mapping));
-							mappingLists.put(colKey + "#" + nextType, xpeList);
+						if (nextType.equals(FUNCTION_IDENTIFIER)) {
+							mappingLists.put(colKey + FUNCTION_IDENTIFIER, null);
+							JSONObject functionDef = innerMapping.getJSONObject(nextType);
+							functionList.put(colKey, functionDef);
+						} else {
+							mapping = innerMapping.optString(nextType, "n.a");
+							if (!mapping.equals("n.a")) {
+								List<XPathExpression> xpeList = new ArrayList<XPathExpression>();
+								xpeList.add(createXPath(mapping));
+								mappingLists.put(colKey + CONTEXT_DELIM + nextType, xpeList);
+							}
 						}
 					}
 				} else if (value instanceof JSONArray) {
+					/*
+					 * Note that a %FUNCTION can not be used in an array
+					 */
 					JSONArray mappingSet = (JSONArray) value;
 					List<XPathExpression> xpeList = new ArrayList<XPathExpression>();
 					for (int i = 0; i < mappingSet.size(); i++) {
@@ -642,7 +825,14 @@ public class XlsxBuilder {
 		return mappingLists;
 	}
 
-	private XPathExpression createXPath(String mapping) {
+	/**
+	 * Similar to <tt>StructureValidation.resolveXPath()</tt> except that if
+	 * deals with the possible presence of a <i>cardinality indicator</i>.
+	 * 
+	 * @param mapping
+	 * @return
+	 */
+	private XPathExpression<?> createXPath(String mapping) {
 		if (mapping.equals("n.a")) {
 			return null;
 		}
@@ -726,37 +916,6 @@ public class XlsxBuilder {
 	}
 
 	/**
-	 * Add header row(s) that conform to the specified version of the Avails
-	 * XLSX template.
-	 * 
-	 * @param sheet
-	 */
-	private void addHeaderRows(XSSFSheet sheet, List<String> colIdList) {
-		Row row1 = sheet.createRow(0);
-		Row row2 = sheet.createRow(1);
-		// need to add an empty row cause spec sez Avails start on Row 4 :(
-		Row row3 = sheet.createRow(2);
-		for (int i = 0; i < colIdList.size(); i++) {
-			String colTag = colIdList.get(i);
-			String[] part = colTag.split(":");
-			Cell cell1 = row1.createCell(i);
-			cell1.setCellValue(part[0]);
-			Cell cell2 = row2.createCell(i);
-			cell2.setCellValue(part[1]);
-			/* add styling to make it more readable */
-			XSSFCellStyle headerStyle = headerColors.get(part[0]);
-			if (headerStyle == null) {
-				headerStyle = defaultStyle;
-			}
-			cell1.setCellStyle(headerStyle);
-			cell2.setCellStyle(headerStyle);
-			// empty header cell..
-			Cell cell3 = row3.createCell(i);
-			cell3.setCellStyle(headerStyleFill);
-		}
-	}
-
-	/**
 	 * Configure all XML-related functions to work with the specified version of
 	 * the Avails XSD. This includes setting the correct version of the Common
 	 * Metadata and MDMEC XSD that are used with the specified Avails version.
@@ -769,6 +928,7 @@ public class XlsxBuilder {
 	 */
 	private void setXmlVersion(String availSchemaVer) throws IllegalArgumentException {
 		switch (availSchemaVer) {
+		case "2.2.2":
 		case "2.2.1":
 			MD_VER = "2.5";
 			MDMEC_VER = "2.5";
@@ -782,36 +942,20 @@ public class XlsxBuilder {
 			throw new IllegalArgumentException("Unsupported Avails Schema version " + availSchemaVer);
 		}
 		AVAIL_VER = availSchemaVer;
-		Namespace.getNamespace("md", "http://www.movielabs.com/schema/mdmec/v" + MDMEC_VER + "/mdmec");
+
 		mdNSpace = Namespace.getNamespace("md", "http://www.movielabs.com/schema/md/v" + MD_VER + "/md");
 		availsNSpace = Namespace.getNamespace("avails",
 				MddfContext.NSPACE_AVAILS_PREFIX + AVAIL_VER + MddfContext.NSPACE_AVAILS_SUFFIX);
+
+		mdSchema = SchemaWrapper.factory("md-v" + MD_VER);
+		availsSchema = SchemaWrapper.factory("avails-v" + AVAIL_VER);
 	}
 
 	/**
-	 * @param destPath
-	 * @throws IOException
-	 * @throws FileNotFoundException
+	 * @return the workbook
 	 */
-	public void export(String destPath) throws FileNotFoundException, IOException {
-		/* First adjust column widths */
-		int sheetCnt = workbook.getNumberOfSheets();
-		for (int i = 0; i < sheetCnt; i++) { 
-			Sheet sheet = workbook.getSheetAt(i);
-			if (sheet != null) {
-				String name = sheet.getSheetName();
-				int colCount = mappingVersion.getJSONObject(name).size();
-				for (int j = 0; j < colCount; j++) {
-					sheet.autoSizeColumn(j);
-				}
-			}
-
-		}
-		try (FileOutputStream outputStream = new FileOutputStream(destPath)) {
-			workbook.write(outputStream);
-			logger.log(LogMgmt.LEV_INFO, logMsgDefaultTag, "XLSX saved to " + destPath, null, logMsgSrcId);
-
-		}
-
+	public TemplateWorkBook getWorkbook() {
+		return workbook;
 	}
+
 }

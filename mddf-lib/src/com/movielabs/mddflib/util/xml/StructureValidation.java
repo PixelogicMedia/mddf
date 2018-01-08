@@ -23,9 +23,12 @@
 package com.movielabs.mddflib.util.xml;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import org.jdom2.Element;
+import org.jdom2.Namespace;
 import org.jdom2.filter.Filters;
 import org.jdom2.xpath.XPathExpression;
 import org.jdom2.xpath.XPathFactory;
@@ -39,34 +42,119 @@ import net.sf.json.JSONObject;
 
 /**
  * A 'helper' class that supports the validation of an XML file against a set of
- * structural requirements not specified via an XSD. The MDDF specifications
- * define many requirements for specific use cases as well as recommended 'best
- * practices'. These requirements and recommendations specify relationships
- * between XML elements that are not defined via the XSD. In order to support
- * validation they are instead formally specified via a JSON-formatted
- * <i>structure definition</i> file. For example:
+ * structural requirements not specified via an XSD.
+ * <p>
+ * The MDDF specifications define many requirements for specific use cases as
+ * well as recommended 'best practices'. These requirements and recommendations
+ * specify relationships between XML elements that are not defined via the XSD.
+ * In order to support validation they are instead formally specified via a
+ * JSON-formatted <i>structure definition</i> file. The
+ * <tt>StructureValidation</tt> class provides the functions that can interpret
+ * the requirements and test an XML file for compliance.
+ * </p>
+ * <h3>Semantics and Syntax:</h3>
+ * <p>
+ * The semantics of JSON a structure definition is as follows:
+ * 
+ * <pre>
+ * {
+ * 	  <i>USAGE</i>:
+ * 		 {
+ * 			"targetPath" : <i>XPATH</i> (optional)
+ * 			"constraint" :
+ * 			[
+ * 				{
+				  "min": <i>INTEGER</i>,
+				  "max": <i>INTEGER</i>,
+				  "xpath": <i>(XPATH | ARRAY[XPATH])</i>,
+				  "severity": <i>("Fatal" | "Error" | "Warning" | "Notice")</i>,
+				  "msg" : <i>STRING</i>,  (optional)
+				  "docRef": <i>STRING</i> (optional)
+ * 				}
+ * 			]
+ * 		 }
+ * }
+ * </pre>
+ * 
+ * where:
+ * <ul>
+ * <li><i>USAGE</i> is a string defining the key used by a validator to retrieve
+ * the requirements appropriate to a use case.</li>
+ * <li>"targetPath" indicates the element(s) that provide the evaluation context
+ * for the constraint xpath when invoking the <tt>validateDocStructure()</tt>
+ * method. If not specified, a target element must be provided when invoking the
+ * <tt>validateConstraint()</tt> method on a target element that has been
+ * identified by other means.</li>
+ * <li>"xpath" defines one or more xpaths relative to the target element that,
+ * when evaluated, the number of matching elements satisfy the min/max
+ * cardinality constraints. If multiple xpaths are listed, the total number of
+ * elements returned when each is separately evaluated must satisfy the
+ * constraint.</li>
+ * <li>"severity" must match one of the <tt>LogMgmt.level</tt> values</li>
+ * <li>"msg" is the text to use for a log entry if the constraint is not met. If
+ * not provided, a generic message is used.</li>
+ * <li>"docRef" is a value usable by <tt>LogReference</tt> that will indicate
+ * any reference material documenting the requirement.</li>
+ * </ul>
+ * </p>
+ * 
+ * <p>
+ * An <tt>XPATH</tt> is defined using the standard XPath syntax with one
+ * modification. Namespaces are indicated using a variable indicating the name
+ * of an MDDF schema. The appropriate namespace prefixes will be inserted by the
+ * software. Supported namespaces are:
+ * <ul>
+ * <li>{avail}</li>
+ * <li>{mdmec}</li>
+ * <li>{manifest}</li>
+ * <li>{md}</li>
+ * </ul>
+ * </p>
+ * 
+ * For example:
  * 
  * <pre>
  * <tt>
- * 
-		"Season": 
+		"POEST": 
 		{
-			"requirement": 
+			"targetPath": ".//{avail}LicenseType[.='POEST']",
+			"constraint": 
+			[
+				{ 
+					"min": "1",
+					"max": "1",
+					"xpath": "../{avail}Term[@termName='SuppressionLiftDate']",
+					"severity": "Error",
+					"msg": "One SuppressionLiftDate is required for LicenseType 'POEST'"
+				}
+			]
+		},
+		
+		"WorkType-Episode": 
+		{
+			"constraint": 
 			[
 				{
-					"docRef": "AVAIL:struc01",
+					"docRef": "AVAIL:avail00n",
 					"min": "1",
-					"max": "1", 
-					"xpath": "{avail}SeasonMetadata[../{avail}WorkType/text()='Season']"
+					"max": "2",
+					"xpath": 
+					[
+						"{avail}EpisodeMetadata/{avail}AltIdentifier",
+						"{avail}EpisodeMetadata/{avail}EditEIDR-URN"
+					]
 				}
 			]
 		},
  *</tt>
  * </pre>
+ * 
+ * <h3>Usage:</h3>
  * <p>
- * The <tt>StructureValidation</tt> class provides the functions that can
- * interpret the requirements and test an XML file for compliance.
- * </p>
+ * Validation modules should determine the appropriate JSON resource file based
+ * on the type and version of the MDDF file. Requirements may then be retrieved
+ * and individually checked using the USAGE key or the entire collection may be
+ * iterated thru.
  * 
  * @author L. Levin, Critical Architectures LLC
  *
@@ -75,38 +163,48 @@ public class StructureValidation {
 
 	private IssueLogger logger;
 	protected String logMsgSrcId;
-	private String availPrefix;
-	private String mdPrefix;
-	private XPathFactory xpfac = XPathFactory.instance();
 
 	public StructureValidation(IssueLogger logger, String logMsgSrcId) {
 		this.logger = logger;
-		availPrefix = XmlIngester.availsNSpace.getPrefix() + ":";
-		mdPrefix = XmlIngester.mdNSpace.getPrefix() + ":";
 	}
 
-	public boolean validateStructure(Element target, JSONObject rqmt) {
+	public boolean validateDocStructure(Element rootEl, JSONObject rqmt) {
+		String rootPath = rqmt.getString("targetPath");
+		XPathExpression<?> xpExp = resolveXPath(rootPath);
+		List<Element> targetElList = (List<Element>) xpExp.evaluate(rootEl);
+		JSONArray constraintSet = rqmt.getJSONArray("constraint");
+		boolean isOk = true;
+		for (Element nextTargetEl : targetElList) {
+			for (int i = 0; i < constraintSet.size(); i++) {
+				JSONObject constraint = constraintSet.getJSONObject(i);
+				isOk = validateConstraint(nextTargetEl, constraint) && isOk;
+			}
+		}
+		return isOk;
+	}
+
+	public boolean validateConstraint(Element target, JSONObject constraint) {
 		boolean curFileIsValid = true;
 
-		int min = rqmt.optInt("min", 0);
-		int max = rqmt.optInt("max", -1);
-		String docRef = rqmt.optString("docRef");
+		int min = constraint.optInt("min", 0);
+		int max = constraint.optInt("max", -1);
+		String docRef = constraint.optString("docRef");
 
-		Object xpaths = rqmt.opt("xpath");
-		List<XPathExpression<Element>> xpeList = new ArrayList<XPathExpression<Element>>();
+		Object xpaths = constraint.opt("xpath");
+		List<XPathExpression<?>> xpeList = new ArrayList<XPathExpression<?>>();
 		String targetList = ""; // for use if error msg is required
+		String[] xpParts = null;
 		if (xpaths instanceof String) {
 			String xpathDef = (String) xpaths;
 			xpeList.add(resolveXPath(xpathDef));
-
-			String[] xpParts = xpathDef.split("\\[");
+			xpParts = xpathDef.split("\\[");
 			targetList = xpParts[0];
 		} else if (xpaths instanceof JSONArray) {
 			JSONArray xpArray = (JSONArray) xpaths;
 			for (int i = 0; i < xpArray.size(); i++) {
 				String xpathDef = xpArray.getString(i);
 				xpeList.add(resolveXPath(xpathDef));
-				String[] xpParts = xpathDef.split("\\[");
+				xpParts = xpathDef.split("\\[");
 				if (i < 1) {
 					targetList = xpParts[0];
 				} else if (i == (xpArray.size() - 1)) {
@@ -120,25 +218,39 @@ public class StructureValidation {
 
 		List<Element> matchedElList = new ArrayList<Element>();
 		for (int i = 0; i < xpeList.size(); i++) {
-			XPathExpression<Element> xpExp = xpeList.get(i);
+			XPathExpression<Element> xpExp = (XPathExpression<Element>) xpeList.get(i);
 			List<Element> nextElList = xpExp.evaluate(target);
 			matchedElList.addAll(nextElList);
 		}
+		String logMsg = constraint.optString("msg", "");
 
 		// check cardinality
 		int count = matchedElList.size();
 		if (min > 0 && (count < min)) {
 			String elName = target.getName();
-			String msg = "Invalid " + elName + " structure: missing child elements";
-			String explanation = elName + " requires minimum of " + min + " of child " + targetList + " elements";
+			String msg;
+			if (logMsg.isEmpty()) {
+				msg = "Invalid " + elName + " structure: missing elements";
+			} else {
+				msg = logMsg;
+			}
+			String explanation = elName + " requires minimum of " + min + " " + targetList + " elements";
+			if (xpParts.length > 1) {
+				explanation = explanation + " matching the criteria [" + xpParts[1];
+			}
 			LogReference srcRef = resolveDocRef(docRef);
 			logger.logIssue(LogMgmt.TAG_AVAIL, LogMgmt.LEV_ERR, target, msg, explanation, srcRef, logMsgSrcId);
 			curFileIsValid = false;
 		}
 		if (max > -1 && (count > max)) {
 			String elName = target.getName();
-			String msg = "Invalid " + elName + " structure: too many child elements";
-			String explanation = elName + " permits maximum of " + max + " of child " + targetList + " elements";
+			String msg;
+			if (logMsg.isEmpty()) {
+				msg = "Invalid " + elName + " structure: too many child elements";
+			} else {
+				msg = logMsg;
+			}
+			String explanation = elName + " permits maximum of " + max + "  " + targetList + " elements";
 			LogReference srcRef = resolveDocRef(docRef);
 			logger.logIssue(LogMgmt.TAG_AVAIL, LogMgmt.LEV_ERR, target, msg, explanation, srcRef, logMsgSrcId);
 			curFileIsValid = false;
@@ -147,28 +259,83 @@ public class StructureValidation {
 		return curFileIsValid;
 	}
 
-	private XPathExpression<Element> resolveXPath(String xpathDef) {
+	/**
+	 * Create a <tt>XPathExpression</tt> from a string representation. An
+	 * <tt>xpathDef</tt> is defined using the standard XPath syntax with one
+	 * modification. Namespaces are indicated using a variable indicating the
+	 * name of an MDDF schema. The appropriate namespace prefixes will be
+	 * inserted by the software. Supported namespaces are:
+	 * <ul>
+	 * <li>{avail}</li>
+	 * <li>{mdmec}</li>
+	 * <li>{manifest}</li>
+	 * <li>{md}</li>
+	 * </ul>
+	 * 
+	 * @param xpathDef
+	 * @return
+	 */
+	public static XPathExpression<?> resolveXPath(String xpathDef) {
+		Set<Namespace> nspaceSet = new HashSet<Namespace>();
+
 		/*
 		 * replace namespace placeholders with actual prefix being used
 		 */
-		String t1 = xpathDef.replaceAll("\\{avail\\}", availPrefix);
-		String t2 = t1.replaceAll("\\{md\\}", mdPrefix);
-		// Now format an XPath
-		String xpath = "./" + t2;
-		XPathExpression<Element> xpExp = xpfac.compile(xpath, Filters.element(), null, XmlIngester.availsNSpace,
-				XmlIngester.mdNSpace);
-		return xpExp;
+		if (xpathDef.contains("{md}")) {
+			xpathDef = xpathDef.replaceAll("\\{md\\}", XmlIngester.mdNSpace.getPrefix() + ":");
+			nspaceSet.add(XmlIngester.mdNSpace);
+		}
+
+		if (xpathDef.contains("{avail}")) {
+			xpathDef = xpathDef.replaceAll("\\{avail\\}", XmlIngester.availsNSpace.getPrefix() + ":");
+			nspaceSet.add(XmlIngester.availsNSpace);
+		}
+
+		if (xpathDef.contains("{manifest}")) {
+			xpathDef = xpathDef.replaceAll("\\{manifest\\}", XmlIngester.manifestNSpace.getPrefix() + ":");
+			nspaceSet.add(XmlIngester.manifestNSpace);
+		}
+
+		if (xpathDef.contains("{mdmec}")) {
+			xpathDef = xpathDef.replaceAll("\\{mdmec\\}", XmlIngester.mdmecNSpace.getPrefix() + ":");
+			nspaceSet.add(XmlIngester.mdmecNSpace);
+		}
+		// Now compile the XPath
+		XPathExpression<?> xpExpression;
+		/**
+		 * The following are examples of xpaths that return an attribute value
+		 * and that we therefore need to identity:
+		 * <ul>
+		 * <li>avail:Term/@termName</li>
+		 * <li>avail:Term[@termName[.='Tier' or .='WSP' or .='DMRP']</li>
+		 * <li>@contentID</li>
+		 * </ul>
+		 * whereas the following should NOT match:
+		 * <ul>
+		 * <li>avail:Term/avail:Event[../@termName='AnnounceDate']</li>
+		 * </ul>
+		 */
+		XPathFactory xpfac = XPathFactory.instance();
+		if (xpathDef.matches(".*/@[\\w]++(\\[.+\\])?")) {
+			// must be an attribute value we're after..
+			xpExpression = xpfac.compile(xpathDef, Filters.attribute(), null, nspaceSet);
+		} else {
+			xpExpression = xpfac.compile(xpathDef, Filters.element(), null, nspaceSet);
+		}
+		return xpExpression;
 	}
 
 	private LogReference resolveDocRef(String docRef) {
 		String docStandard = null;
 		String docSection = null;
 		LogReference srcRef = null;
-		if (docRef != null) {
+		if (docRef != null && !docRef.isEmpty()) {
 			String[] parts = docRef.split(":");
-			docStandard = parts[0];
-			docSection = parts[1];
-			srcRef = LogReference.getRef(docStandard, docSection);
+			if (parts.length >= 2) {
+				docStandard = parts[0];
+				docSection = parts[1];
+				srcRef = LogReference.getRef(docStandard, docSection);
+			}
 		}
 		return srcRef;
 	}

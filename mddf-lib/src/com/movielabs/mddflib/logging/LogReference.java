@@ -71,8 +71,8 @@ public class LogReference {
 	 * Return a <tt>LogReference</tt> to documentation matching the query
 	 * arguments. The arguments are:
 	 * <ul>
-	 * <li>standard: indicates an MDDF standard using the appropriate code
-	 * (e.g., 'MMM' for Common Media Manifest Metadata)</li>
+	 * <li>standard: indicates an MDDF standards document using the appropriate
+	 * code (e.g., 'MMM' for Common Media Manifest Metadata)</li>
 	 * <li>refID: indicates topic.</li>
 	 * </ul>
 	 * If a match for a topic can not be found specific to the latest version of
@@ -89,7 +89,6 @@ public class LogReference {
 			try {
 				loadXml(new File(srcPath));
 			} catch (Exception e) {
-				e.printStackTrace();
 				return null;
 			}
 		}
@@ -126,7 +125,7 @@ public class LogReference {
 	 */
 	private static String getPriorVersion(String standard, String curVersion) {
 		String[] supportedVersions = MddfContext.getSupportedVersions(standard);
-		if(supportedVersions==null){
+		if (supportedVersions == null) {
 			return null;
 		}
 		if (curVersion == null) {

@@ -25,6 +25,7 @@ package com.movielabs.mddflib.util.xml;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import org.jdom2.Document;
@@ -35,6 +36,8 @@ import org.jdom2.input.SAXBuilder;
 import org.jdom2.located.LocatedJDOMFactory;
 import org.jdom2.xpath.XPathExpression;
 import org.jdom2.xpath.XPathFactory;
+
+import com.movielabs.mddf.MddfContext;
 
 /**
  * Wrapper for an XML representation of a Content Rating System. Complete
@@ -48,13 +51,11 @@ import org.jdom2.xpath.XPathFactory;
  */
 public class RatingSystem {
 
-	public static final String RSRC_PACKAGE = "/com/movielabs/mddf/resources/";
 	public static final Namespace mdcrNSpace = Namespace.getNamespace("mdcr",
 			"http://www.movielabs.com/schema/mdcr/v1.1");
 	public static final Namespace mdNSpace = Namespace.getNamespace("md", "http://www.movielabs.com/schema/md/v2.1/md");
 	private static final String idXPath = "./mdcr:RatingSystem/mdcr:RatingSystemID/mdcr:System";
 	private static Map<String, RatingSystem> cache = new HashMap<String, RatingSystem>();
-	private static String curVer = "v2.3";
 	private static Element cmrRootEl = null;
 
 	private XPathFactory xpfac = XPathFactory.instance();
@@ -62,8 +63,8 @@ public class RatingSystem {
 	private String ratingSysId;
 
 	static {
-		String xmlRsrc = "CMR_Ratings_" + curVer + ".xml";
-		String rsrcPath = RSRC_PACKAGE + xmlRsrc;
+		String xmlRsrc = "CMR_Ratings_" + MddfContext.CUR_RATINGS_VER + ".xml";
+		String rsrcPath = MddfContext.RSRC_PATH + xmlRsrc;
 		SAXBuilder builder = new SAXBuilder();
 		builder.setJDOMFactory(new LocatedJDOMFactory());
 		InputStream inp = RatingSystem.class.getResourceAsStream(rsrcPath);
@@ -127,7 +128,8 @@ public class RatingSystem {
 	}
 
 	/**
-	 * @param isoCountryCode ISO 3166-1 Alpha-2 code
+	 * @param isoCountryCode
+	 *            ISO 3166-1 Alpha-2 code
 	 * @return
 	 */
 	public boolean isUsedInRegion(String isoCode) {
@@ -138,7 +140,8 @@ public class RatingSystem {
 	}
 
 	/**
-	 * @param isoCountryCode ISO 3166-2 code
+	 * @param isoCountryCode
+	 *            ISO 3166-2 code
 	 * @return
 	 */
 	public boolean isUsedInSubRegion(String isoCode) {
@@ -147,7 +150,21 @@ public class RatingSystem {
 		Element countryEl = xpExpression.evaluateFirst(ratingSystemEl);
 		return (countryEl != null);
 	}
-	
+
+	public boolean providesReasons() {
+		String queryPath = "./mdcr:Reason";
+		XPathExpression<Element> xpExpression = xpfac.compile(queryPath, Filters.element(), null, mdcrNSpace);
+		List<Element> reasonElList = xpExpression.evaluate(ratingSystemEl);
+		return !reasonElList.isEmpty();
+	}
+
+	public boolean hasReason(String reason) {
+		String queryPath = "./mdcr:Reason[@reasonID='" + reason + "']";
+		XPathExpression<Element> xpExpression = xpfac.compile(queryPath, Filters.element(), null, mdcrNSpace);
+		Element reasonEl = xpExpression.evaluateFirst(ratingSystemEl);
+		return reasonEl != null;
+	}
+
 	/* FOR TESTING!!! */
 	public static void runTest() {
 		test("MOC", "E");

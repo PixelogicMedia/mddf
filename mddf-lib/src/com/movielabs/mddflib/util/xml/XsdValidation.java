@@ -22,20 +22,11 @@
  */
 package com.movielabs.mddflib.util.xml;
 
-import java.io.BufferedInputStream;
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.Reader;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
+import java.net.URL;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
-
 import javax.xml.XMLConstants;
 import javax.xml.transform.Source;
 import javax.xml.transform.stream.StreamSource;
@@ -45,8 +36,6 @@ import javax.xml.validation.Validator;
 
 import org.jdom2.Element;
 import org.jdom2.transform.JDOMSource;
-import org.w3c.dom.ls.LSInput;
-import org.w3c.dom.ls.LSResourceResolver;
 import org.xml.sax.ErrorHandler;
 import org.xml.sax.SAXException;
 import org.xml.sax.SAXParseException;
@@ -62,57 +51,22 @@ import com.movielabs.mddflib.logging.LogMgmt;
  */
 public class XsdValidation {
 	public static String defaultRsrcLoc;
-	private static boolean streamModeA;
 	private static int logMsgDefaultTag = LogMgmt.TAG_XSD;
 
 	static {
 		/*
-		 * Mode A works but required a kludge (i.e., duplicate XSD files); Mode
-		 * B has a bug.
+		 * This will be used with ClassLoader.getResource() so the path is
+		 * always absolute. Hence, no leading '/'
 		 */
-
-		streamModeA = true;
-
-		if (streamModeA) {
-			defaultRsrcLoc = "./resources/";
-		} else {
-			defaultRsrcLoc = SchemaWrapper.RSRC_PACKAGE;
+		defaultRsrcLoc = SchemaWrapper.RSRC_PACKAGE;
+		if (defaultRsrcLoc.startsWith("/")) {
+			defaultRsrcLoc = defaultRsrcLoc.replaceFirst("/", ""); 
 		}
-	}
-
-	public static StreamSource[] generateStreamSources(String[] xsdFilesPaths) {
-
-		if (streamModeA) {
-			return generateStreamSources_A(xsdFilesPaths);
-		} else {
-			return generateStreamSources_B(xsdFilesPaths);
-		}
-	}
-
-	private static StreamSource[] generateStreamSources_A(String[] xsdFilesPaths) {
-		Stream<String> xsdStreams = Arrays.stream(xsdFilesPaths);
-		Stream<Object> streamSrcs = xsdStreams.map(StreamSource::new);
-		List<Object> collector = streamSrcs.collect(Collectors.toList());
-		StreamSource[] result = collector.toArray(new StreamSource[xsdFilesPaths.length]);
-		return result;
-	}
-
-	private static StreamSource[] generateStreamSources_B(String[] xsdFilesPaths) {
-		StreamSource[] result = new StreamSource[xsdFilesPaths.length];
-		for (int i = 0; i < result.length; i++) {
-			InputStream inStream = XmlIngester.class.getResourceAsStream(xsdFilesPaths[i]);
-			if (inStream != null) {
-				result[i] = new StreamSource(inStream);
-				System.out.println("Found schema rsrc: " + xsdFilesPaths[i]);
-			} else {
-				System.out.println("NULL schema rsrc: " + xsdFilesPaths[i]);
-			}
-		}
-		return result;
 	}
 
 	private LogMgmt loggingMgr;
 	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+	private Validator validator;
 
 	public XsdValidation(LogMgmt loggingMgr) {
 		this.loggingMgr = loggingMgr;
@@ -132,25 +86,16 @@ public class XsdValidation {
 	public boolean validateXml(File srcFile, Element docRootEl, String xsdLocation, String moduleId) {
 		// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 		SchemaFactory schemaFactory = SchemaFactory.newInstance(XMLConstants.W3C_XML_SCHEMA_NS_URI);
-
-		if (!streamModeA) {
-			System.out.println("Loading XSD resource using Mode 'B'");
-			schemaFactory.setResourceResolver(new ResourceResolver());
-		}
-
-		List<String> xsdPathList = new ArrayList<String>();
-		xsdPathList.add(xsdLocation);
-		String[] xsdPaths = new String[xsdPathList.size()];
-		xsdPaths = xsdPathList.toArray(xsdPaths);
-		StreamSource[] xsdSources = generateStreamSources(xsdPaths);
+		URL xsdUrl = getClass().getClassLoader().getResource(xsdLocation);
 		String genericTooltip = "XML does not conform to schema as defined in " + xsdLocation;
 		Schema schema;
 		try {
-			schema = schemaFactory.newSchema(xsdSources);
+			schema = schemaFactory.newSchema(xsdUrl);
 		} catch (SAXParseException e1) {
-			String msg = "Unable to process" + e1.getMessage();
+			String msg = "Unable to process: " + e1.getMessage();
 			msg = msg.replace("schema_reference.4", "");
 			loggingMgr.log(LogMgmt.LEV_FATAL, logMsgDefaultTag, msg, srcFile, -1, moduleId, genericTooltip, null);
+			e1.printStackTrace();
 			return false;
 		} catch (SAXException e1) {
 			e1.printStackTrace();
@@ -162,7 +107,7 @@ public class XsdValidation {
 		XsdErrorHandler errHandler = new XsdErrorHandler(srcFile);
 		// now do actual validation
 		try {
-			Validator validator = schema.newValidator();
+			validator = schema.newValidator();
 			validator.setErrorHandler(errHandler);
 			/*
 			 * This block of code handles a problem associated with supporting
@@ -215,242 +160,10 @@ public class XsdValidation {
 		return description;
 	}
 
-
 	// ###################################################################
 
 	// ###################################################################
-	/**
-	 * @author L. Levin, Critical Architectures LLC
-	 *
-	 */
-	public class Input implements LSInput {
 
-		private String publicId;
-		private String systemId;
-		private BufferedInputStream bufferedInStream;
-		private InputStreamReader inStreamReader;
-
-		/**
-		 * @param publicId
-		 * @param systemId
-		 * @param inStream
-		 */
-		public Input(String publicId, String systemId, InputStream inStream) {
-			this.publicId = publicId;
-			this.systemId = systemId;
-			this.bufferedInStream = new BufferedInputStream(inStream);
-			this.inStreamReader = new InputStreamReader(inStream);
-		}
-
-		/*
-		 * (non-Javadoc)
-		 * 
-		 * @see org.w3c.dom.ls.LSInput#getCharacterStream()
-		 */
-		@Override
-		public Reader getCharacterStream() {
-			// TODO Auto-generated method stub
-			System.out.println("##### getCharacterStream " + systemId);
-			return inStreamReader;
-		}
-
-		/*
-		 * (non-Javadoc)
-		 * 
-		 * @see org.w3c.dom.ls.LSInput#setCharacterStream(java.io.Reader)
-		 */
-		@Override
-		public void setCharacterStream(Reader characterStream) {
-			// TODO Auto-generated method stub
-
-		}
-
-		/*
-		 * (non-Javadoc)
-		 * 
-		 * @see org.w3c.dom.ls.LSInput#getByteStream()
-		 */
-		@Override
-		public InputStream getByteStream() {
-			// TODO Auto-generated method stub
-			return null;
-		}
-
-		/*
-		 * (non-Javadoc)
-		 * 
-		 * @see org.w3c.dom.ls.LSInput#setByteStream(java.io.InputStream)
-		 */
-		@Override
-		public void setByteStream(InputStream byteStream) {
-			// TODO Auto-generated method stub
-
-		}
-
-		/*
-		 * (non-Javadoc)
-		 * 
-		 * @see org.w3c.dom.ls.LSInput#getStringData()
-		 */
-		@Override
-		public String getStringData() {
-			synchronized (bufferedInStream) {
-				try {
-					byte[] input = new byte[bufferedInStream.available()];
-					bufferedInStream.read(input);
-					String contents = new String(input);
-					System.out.println("##### getStringData " + systemId);
-					return contents;
-				} catch (IOException e) {
-					// e.printStackTrace();
-					return null;
-				}
-			}
-		}
-
-		/*
-		 * (non-Javadoc)
-		 * 
-		 * @see org.w3c.dom.ls.LSInput#setStringData(java.lang.String)
-		 */
-		@Override
-		public void setStringData(String stringData) {
-			// TODO Auto-generated method stub
-
-		}
-
-		/*
-		 * (non-Javadoc)
-		 * 
-		 * @see org.w3c.dom.ls.LSInput#getSystemId()
-		 */
-		@Override
-		public String getSystemId() {
-			return systemId;
-		}
-
-		/*
-		 * (non-Javadoc)
-		 * 
-		 * @see org.w3c.dom.ls.LSInput#setSystemId(java.lang.String)
-		 */
-		@Override
-		public void setSystemId(String systemId) {
-			this.systemId = systemId;
-		}
-
-		/*
-		 * (non-Javadoc)
-		 * 
-		 * @see org.w3c.dom.ls.LSInput#getPublicId()
-		 */
-		@Override
-		public String getPublicId() {
-			return publicId;
-		}
-
-		/*
-		 * (non-Javadoc)
-		 * 
-		 * @see org.w3c.dom.ls.LSInput#setPublicId(java.lang.String)
-		 */
-		@Override
-		public void setPublicId(String publicId) {
-			this.publicId = publicId;
-		}
-
-		/*
-		 * (non-Javadoc)
-		 * 
-		 * @see org.w3c.dom.ls.LSInput#getBaseURI()
-		 */
-		@Override
-		public String getBaseURI() {
-			// TODO Auto-generated method stub
-			return null;
-		}
-
-		/*
-		 * (non-Javadoc)
-		 * 
-		 * @see org.w3c.dom.ls.LSInput#setBaseURI(java.lang.String)
-		 */
-		@Override
-		public void setBaseURI(String baseURI) {
-			// TODO Auto-generated method stub
-
-		}
-
-		/*
-		 * (non-Javadoc)
-		 * 
-		 * @see org.w3c.dom.ls.LSInput#getEncoding()
-		 */
-		@Override
-		public String getEncoding() {
-			// TODO Auto-generated method stub
-			return null;
-		}
-
-		/*
-		 * (non-Javadoc)
-		 * 
-		 * @see org.w3c.dom.ls.LSInput#setEncoding(java.lang.String)
-		 */
-		@Override
-		public void setEncoding(String encoding) {
-			// TODO Auto-generated method stub
-
-		}
-
-		/*
-		 * (non-Javadoc)
-		 * 
-		 * @see org.w3c.dom.ls.LSInput#getCertifiedText()
-		 */
-		@Override
-		public boolean getCertifiedText() {
-			return false;
-		}
-
-		/*
-		 * (non-Javadoc)
-		 * 
-		 * @see org.w3c.dom.ls.LSInput#setCertifiedText(boolean)
-		 */
-		@Override
-		public void setCertifiedText(boolean certifiedText) {
-			// TODO Auto-generated method stub
-
-		}
-
-	}
-
-	/**
-	 * @author L. Levin, Critical Architectures LLC
-	 *
-	 */
-	public class ResourceResolver implements LSResourceResolver {
-
-		/*
-		 * (non-Javadoc)
-		 * 
-		 * @see
-		 * org.w3c.dom.ls.LSResourceResolver#resolveResource(java.lang.String,
-		 * java.lang.String, java.lang.String, java.lang.String,
-		 * java.lang.String)
-		 */
-		@Override
-		public LSInput resolveResource(String type, String namespaceURI, String publicId, String systemId,
-				String baseURI) {
-			InputStream inStream = ResourceResolver.class.getResourceAsStream(SchemaWrapper.RSRC_PACKAGE + systemId);
-			System.out.println("resolveResource:: namespaceURI=" + namespaceURI + ", systemId=" + systemId);
-			return new Input(publicId, systemId, inStream);
-		}
-
-	}
-
-	// ###################################################################
 	/**
 	 * Custom error handler used while validating xml against xsd. This class
 	 * serves two purposes:
@@ -491,6 +204,9 @@ public class XsdValidation {
 
 		private void handleMessage(int level, SAXParseException exception) throws SAXException {
 			int lineNumber = exception.getLineNumber();
+			Element invalidElement = (Element) validator
+					.getProperty("http://apache.org/xml/properties/dom/current-element-node");
+			System.out.println("Invalid element: " + invalidElement);
 			String message = parseSaxMessage(exception);
 			String explanation = "XML at line: " + lineNumber + " does not comply with schema :: " + message;
 			loggingMgr.log(level, LogMgmt.TAG_XSD, message, srcFile, lineNumber, "XmlIngester", explanation, null);
@@ -508,7 +224,8 @@ public class XsdValidation {
 		private String parseSaxMessage(SAXParseException exception) {
 			String msgType1 = "Invalid content was found starting with element";
 			String msgType2 = "is a simple type, so it cannot have attributes";
-			String msgType3 = "The content of element '[\\w]+:[\\w]+' is not complete.";
+			String msgType3 = "'([a-z]+:)?+\\w+' is not complete";
+			// "The content of element '[\\w]+:[\\w]+' is not complete.";
 			String message = exception.getMessage();
 			String primary = getPrimary(message);
 			String secondary = getSecondary(message);
@@ -530,13 +247,8 @@ public class XsdValidation {
 		}
 
 		private String getPrimary(String text) {
-			Pattern p = Pattern.compile("[a-z]+:[a-zA-Z\\-]+");
+			Pattern p = Pattern.compile("([a-z]+:)?+\\w+'");
 			Matcher m = p.matcher(text);
-			if (m.find()) {
-				return m.group();
-			}
-			Pattern p2 = Pattern.compile("'[a-zA-Z\\-]+'");
-			m = p2.matcher(text);
 			if (m.find()) {
 				return m.group();
 			}
@@ -545,13 +257,16 @@ public class XsdValidation {
 		}
 
 		private String getSecondary(String text) {
-			Pattern p = Pattern.compile("[a-z]+\":[a-zA-Z\\-]+");
+			String uriPrefixRegex = "\"(http:/){1}(/[a-zA-Z\\d\\.]+)+\":?";
+			String elementName = "[a-zA-Z\\d]+";
+			Pattern p = Pattern.compile(uriPrefixRegex + elementName);
 			Matcher m = p.matcher(text);
 			String result = "";
 			boolean hasAnother = m.find();
 			String sep = "";
 			while (hasAnother) {
 				String next = m.group();
+				next = next.replaceFirst(uriPrefixRegex, "");
 				hasAnother = m.find();
 				if (hasAnother) {
 					result = result + sep + next;

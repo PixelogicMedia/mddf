@@ -28,37 +28,19 @@ import java.util.List;
 import org.jdom2.Element;
 import org.jdom2.JDOMException;
 import com.movielabs.mddflib.logging.LogMgmt;
-import com.movielabs.mddflib.util.AbstractValidator;
+import com.movielabs.mddflib.util.CMValidator;
 import com.movielabs.mddflib.util.xml.SchemaWrapper;
 import com.movielabs.mddflib.util.xml.XsdValidation;
 import com.movielabs.mddflib.util.xml.XmlIngester;
 
-public class MecValidator extends AbstractValidator {
+public class MecValidator extends CMValidator {
 
 	public static final String LOGMSG_ID = "MecValidator";
 
-	static final String DOC_VER = "2.4"; 
+	static final String DOC_VER = "2.4";
 
 	static {
 		id2typeMap = new HashMap<String, String>();
-
-		try {
-			/*
-			 * There is no controlled vocab that is specific to a MEC file. Note
-			 * the vocab set for validating Common Metadata will be loaded by
-			 * the parent class AbstractValidator.
-			 */
-
-			/*
-			 * ISO codes are simple so we use Properties
-			 */
-			String iso3166RsrcPath = "/com/movielabs/mddf/resources/ISO3166-1.properties";
-			iso3166_1_codes = loadProperties(iso3166RsrcPath);
-		} catch (Exception e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
-		}
-
 	}
 
 	/**
@@ -67,7 +49,6 @@ public class MecValidator extends AbstractValidator {
 	public MecValidator(boolean validateC, LogMgmt loggingMgr) {
 		super(loggingMgr);
 		this.validateC = validateC;
-		rootPrefix = "mdmec:";
 
 		logMsgSrcId = LOGMSG_ID;
 		logMsgDefaultTag = LogMgmt.TAG_MEC;
@@ -78,12 +59,12 @@ public class MecValidator extends AbstractValidator {
 		curFile = xmlFile;
 		curFileName = xmlFile.getName();
 		curFileIsValid = true;
-		
-		String schemaVer = identifyXsdVersion(  docRootEl);
+
+		String schemaVer = identifyXsdVersion(docRootEl);
 		loggingMgr.log(LogMgmt.LEV_DEBUG, logMsgDefaultTag, "Using Schema Version " + schemaVer, srcFile, logMsgSrcId);
 		setMdMecVersion(schemaVer);
 		rootNS = mdmecNSpace;
-		
+
 		validateXml(xmlFile, docRootEl);
 		// }
 		if (!curFileIsValid) {
@@ -121,12 +102,8 @@ public class MecValidator extends AbstractValidator {
 		loggingMgr.log(LogMgmt.LEV_DEBUG, logMsgDefaultTag, "Validating constraints", curFile, LOGMSG_ID);
 		super.validateConstraints();
 
-		SchemaWrapper availSchema = SchemaWrapper.factory("mdmec-v" + XmlIngester.MDMEC_VER);
-		List<String> reqElList = availSchema.getReqElList();
-		for (int i = 0; i < reqElList.size(); i++) {
-			String key = reqElList.get(i);
-			validateNotEmpty(key);
-		}
+		SchemaWrapper mecSchema = SchemaWrapper.factory("mdmec-v" + XmlIngester.MDMEC_VER);
+		validateNotEmpty(mecSchema);
 
 		/*
 		 * Validate the usage of controlled vocab (i.e., places where XSD
@@ -141,29 +118,24 @@ public class MecValidator extends AbstractValidator {
 	/**
 	 * @return
 	 */
-	protected boolean validateCMVocab() {
-		boolean allOK = true; 
-
+	protected void validateCMVocab() { 
 		/*
 		 * Validate use of Country identifiers....
 		 */
-		allOK = validateRegion(mdNSpace, "DistrTerritory", mdNSpace, "country") && allOK;
-		allOK = validateRegion(mdNSpace, "CountryOfOrigin", mdNSpace, "country") && allOK;
+		validateRegion(mdNSpace, "DistrTerritory", mdNSpace, "country");
+		validateRegion(mdNSpace, "CountryOfOrigin", mdNSpace, "country");
 		// in multiple places
-		allOK = validateRegion(mdNSpace, "Region", mdNSpace, "country") && allOK;
+		validateRegion(mdNSpace, "Region", mdNSpace, "country");
 
-		/* Validate language codes */ 
-		allOK = validateLanguage(mdNSpace, "LocalizedInfo", null, "@language") && allOK;
-		allOK = validateLanguage(mdNSpace, "TitleAlternate", null, "@language") && allOK;
-		allOK = validateLanguage(mdNSpace, "DisplayName", null, "@language") && allOK;
-		allOK = validateLanguage(mdNSpace, "SortName", null, "@language") && allOK;
-		allOK = validateLanguage(mdNSpace, "DisplayString", null, "@language") && allOK;
-		allOK = validateLanguage(mdmecNSpace, "Basic", mdNSpace, "PrimarySpokenLanguage") && allOK;
-		allOK = validateLanguage(mdmecNSpace, "Basic", mdNSpace, "OriginalLanguage") && allOK;
-		allOK = validateLanguage(mdmecNSpace, "Basic", mdNSpace, "VersionLanguage") && allOK;
-
-		return allOK;
+		/* Validate language codes */
+		
+		/* First check all usage of the '@language' attribute */
+		validateLanguage(manifestNSpace);
+		
+		// Now check any other usage....
+		validateLanguage(mdmecNSpace, "Basic", mdNSpace, "PrimarySpokenLanguage");
+		validateLanguage(mdmecNSpace, "Basic", mdNSpace, "OriginalLanguage");
+		validateLanguage(mdmecNSpace, "Basic", mdNSpace, "VersionLanguage"); 
 	}
-
 
 }

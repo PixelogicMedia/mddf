@@ -22,16 +22,19 @@
  */
 package com.movielabs.mddflib.avails.xml;
 
-import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.Row;
-
-import com.movielabs.mddflib.avails.xlsx.AvailsSheet;
+import org.jdom2.Element;
 
 /**
+ * * Create XML document from a v1.6 Excel spreadsheet. The XML generated will
+ * be based on v2.1 of the Avails XSD and reflects a "best effort" in that there
+ * is no guarantee that it is valid.
+ * 
  * @author L. Levin, Critical Architectures LLC
  *
+ * @deprecated v1.6 Excel is no longer supported
  */
-public class RowToXmlHelperV1_6 extends RowToXmlHelper {
+public class RowToXmlHelperV1_6 extends RowToXmlHelperV1_7 {
 
 	/**
 	 * @param sheet
@@ -53,10 +56,56 @@ public class RowToXmlHelperV1_6 extends RowToXmlHelper {
 	}
 
 	/**
+	 * populate a Transaction element that conforms to v2.1 of the Avails XSD
+	 * 
+	 * @param transactionEl
+	 */
+	protected void processTransactionBody(Element transactionEl) {
+		String prefix = "AvailTrans/";
+		process(transactionEl, "LicenseType", xb.getAvailsNSpace(), prefix + "LicenseType");
+		/*
+		 * 'Description' is a SPECIAL CASE. The 2.1 XSD has it as REQUIRED but
+		 * the 1.6 Excel has it as OPTIONAL.
+		 * 
+		 */
+		Pedigree pg = getPedigreedData(prefix + "Description");
+		String value = pg.getRawValue();
+		if (value.isEmpty()) {
+			value = "not provided";
+		}
+		Element childEl = mGenericElement("Description", value, xb.getAvailsNSpace());
+		transactionEl.addContent(childEl);
+		xb.addToPedigree(childEl, pg);
+
+		addRegion(transactionEl, "Territory", xb.getAvailsNSpace(), prefix + "Territory");
+		// Start or StartCondition
+		processCondition(transactionEl, "Start", xb.getAvailsNSpace(), prefix + "Start");
+		// End or EndCondition
+		processCondition(transactionEl, "End", xb.getAvailsNSpace(), prefix + "End");
+
+		process(transactionEl, "StoreLanguage", xb.getAvailsNSpace(), prefix + "StoreLanguage", ",");
+		process(transactionEl, "LicenseRightsDescription", xb.getAvailsNSpace(), prefix + "LicenseRightsDescription");
+		process(transactionEl, "FormatProfile", xb.getAvailsNSpace(), prefix + "FormatProfile");
+		process(transactionEl, "ContractID", xb.getAvailsNSpace(), prefix + "ContractID");
+
+		addAllTerms(transactionEl);
+
+		process(transactionEl, "OtherInstructions", xb.getAvailsNSpace(), prefix + "OtherInstructions");
+
+	}
+
+	protected void addAllTerms(Element transactionEl) {
+		super.addAllTerms(transactionEl);
+		String prefix = "AvailTrans/";
+		addTerm(transactionEl, prefix + "HoldbackLanguage", "HoldbackLanguage", "Language");
+		addTerm(transactionEl, prefix + "HoldbackExclusionLanguage", "HoldbackExclusionLanguage", "Language");
+	}
+
+	/**
 	 * @param colKey
 	 * @return
 	 */
-	protected Pedigree getPedigreedData(String colKey) {
+	public Pedigree getPedigreedData(String colKey) {
 		String mappedKey = mapKey(colKey);
 		if (mappedKey != null) {
 			return super.getPedigreedData(mappedKey);
@@ -77,15 +126,51 @@ public class RowToXmlHelperV1_6 extends RowToXmlHelper {
 		case "AvailTrans/AssetLanguage":
 			return "AvailTrans/StoreLanguage";
 		case "Avail/ALID":
-			return "AvailMetadata/AltID";
+			if (sheet.isForTV()) {
+				/*
+				 * ALID replaces EpisodeAltID or SeasonAltID depending on
+				 * whether it's an episode or season avail.
+				 */
+
+				if (workType.equals("Episode")) {
+					return "AvailMetadata/EpisodeAltID";
+				} else if (workType.equals("Season")) {
+					return "AvailMetadata/SeasonAltID";
+				} else {
+					return null;
+				}
+			} else {
+				return "AvailMetadata/AltID";
+			}
+		case "Avail/ExceptionFlag":
+			if (sheet.isForTV()) {
+				/*
+				 * This handles a typo in the v1.6 template for TV Avails
+				 */
+				return "Avail/ExceptionsFlag";
+			} else {
+				return "Avail/ExceptionFlag";
+			}
 		case "AvailAsset/EditID":
 			return "AvailAsset/ProductID";
 		case "AvailAsset/TitleID":
 			return "AvailAsset/ContentID";
 		case "AvailAsset/ContentID":
+			// TODO: fix code
+			/*
+			 * Instructions are actually to use AltID only if EncodeID is not
+			 * defined.
+			 */
 			return "AvailMetadata/AltID";
+		// ..................................
 		case "AvailTrans/AllowedLanguages":
 			return "AvailTrans/HoldbackExclusionLanguage";
+		case "AvailMetadata/EpisodeID":
+			return "AvailMetadata/EpisodeAltID";
+		case "AvailMetadata/SeasonID":
+			return "AvailMetadata/SeasonAltID";
+		case "AvailMetadata/SeriesID":
+			return "AvailMetadata/SeriesAltID";
 		case "Avail/BundledALIDs":
 		case "AvailTrans/PriceCurrency":
 		case "AvailTrans/AnnounceDate":
@@ -93,6 +178,19 @@ public class RowToXmlHelperV1_6 extends RowToXmlHelper {
 		default:
 			return colKey;
 		}
+	}
+
+	/**
+	 * Filter out deprecated PriceType terms. Since v1.6 is the 'base' version,
+	 * there are no deprecated vocabulary and the implementation simply returns
+	 * the input <tt>value</tt>.
+	 * 
+	 * @param colKey
+	 * @param value
+	 * @return
+	 */
+	protected Pedigree filterDeprecated(Pedigree pg) {
+		return pg;
 	}
 
 }

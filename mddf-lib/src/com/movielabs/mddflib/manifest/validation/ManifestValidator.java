@@ -23,8 +23,9 @@ package com.movielabs.mddflib.manifest.validation;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import net.sf.json.JSONArray;
@@ -37,23 +38,24 @@ import org.jdom2.xpath.XPathExpression;
 
 import com.movielabs.mddflib.logging.LogMgmt;
 import com.movielabs.mddflib.logging.LogReference;
-import com.movielabs.mddflib.util.AbstractValidator;
+import com.movielabs.mddflib.util.CMValidator;
 import com.movielabs.mddflib.util.PathUtilities;
 import com.movielabs.mddflib.util.xml.SchemaWrapper;
 import com.movielabs.mddflib.util.xml.XmlIngester;
+import com.movielabs.mddflib.util.xml.XsdValidation;
 
 /**
  * Validates a Manifest file as conforming to the Common Media Manifest (CMM) as
  * specified in <tt>TR-META-MMM (v1.5)</tt>. Validation also includes testing
- * for conformance with the <tt>Common Metadata (md)</tt> specification as
- * defined in <tt>TR-META-CM (v2.4)</tt>
+ * for conformance with the appropriate version of the
+ * <tt>Common Metadata (md)</tt> specification.
  * 
  * @see <a href= "http://www.movielabs.com/md/manifest/v1.5/Manifest_v1.5.pdf">
  *      TR-META-MMM (v1.5)</a>
  * @author L. Levin, Critical Architectures LLC
  *
  */
-public class ManifestValidator extends AbstractValidator {
+public class ManifestValidator extends CMValidator {
 
 	/**
 	 * Used to facilitate keeping track of cross-references and identifying
@@ -100,8 +102,6 @@ public class ManifestValidator extends AbstractValidator {
 	}
 
 	public static final String LOGMSG_ID = "ManifestValidator";
-	private static JSONObject manifestVocab;
-	private static JSONObject availVocab;
 
 	static {
 		id2typeMap = new HashMap<String, String>();
@@ -111,19 +111,6 @@ public class ManifestValidator extends AbstractValidator {
 		id2typeMap.put("InteractiveTrackID", "interactiveid");
 		id2typeMap.put("ProductID", "alid");
 		id2typeMap.put("ContentID", "cid");
-
-		/*
-		 * Is there a controlled vocab that is specific to a Manifest? Note the
-		 * vocab set for validating Common Metadata will be loaded by the parent
-		 * class AbstractValidator.
-		 */
-		try {
-			manifestVocab = loadVocab(vocabRsrcPath, "Manifest");
-			availVocab = loadVocab(vocabRsrcPath, "Avail");
-		} catch (Exception e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
-		}
 	}
 
 	/**
@@ -134,7 +121,6 @@ public class ManifestValidator extends AbstractValidator {
 		this.validateC = validateC;
 
 		rootNS = manifestNSpace;
-		rootPrefix = "manifest:";
 
 		logMsgSrcId = LOGMSG_ID;
 		logMsgDefaultTag = LogMgmt.TAG_MANIFEST;
@@ -147,7 +133,8 @@ public class ManifestValidator extends AbstractValidator {
 		curRootEl = null;
 
 		String schemaVer = identifyXsdVersion(docRootEl);
-		loggingMgr.log(LogMgmt.LEV_DEBUG, logMsgDefaultTag, "Using Schema Version " + schemaVer, srcFile, logMsgSrcId);
+		loggingMgr.log(LogMgmt.LEV_INFO, logMsgDefaultTag, "Validating using Schema Version " + schemaVer, srcFile,
+				logMsgSrcId);
 		setManifestVersion(schemaVer);
 		rootNS = manifestNSpace;
 
@@ -172,7 +159,7 @@ public class ManifestValidator extends AbstractValidator {
 	 * @param manifestFile
 	 */
 	protected boolean validateXml(File srcFile, Element docRootEl) {
-		String manifestXsdFile = "./resources/manifest-v" + XmlIngester.MAN_VER + ".xsd";
+		String manifestXsdFile = XsdValidation.defaultRsrcLoc + "manifest-v" + XmlIngester.MAN_VER + ".xsd";
 		curFileIsValid = xsdHelper.validateXml(srcFile, docRootEl, manifestXsdFile, logMsgSrcId);
 		return curFileIsValid;
 	}
@@ -184,12 +171,9 @@ public class ManifestValidator extends AbstractValidator {
 		loggingMgr.log(LogMgmt.LEV_DEBUG, LogMgmt.TAG_MANIFEST, "Validating constraints", curFile, LOGMSG_ID);
 		super.validateConstraints();
 
-		SchemaWrapper availSchema = SchemaWrapper.factory("manifest-v" + XmlIngester.MAN_VER);
-		List<String> reqElList = availSchema.getReqElList();
-		for (int i = 0; i < reqElList.size(); i++) {
-			String key = reqElList.get(i);
-			validateNotEmpty(key);
-		}
+		SchemaWrapper targetSchema = SchemaWrapper.factory("manifest-v" + XmlIngester.MAN_VER);
+		validateNotEmpty(targetSchema);
+
 		// TODO: Load from JSON file....
 		/*
 		 * Check ID for any Inventory components....
@@ -210,6 +194,7 @@ public class ManifestValidator extends AbstractValidator {
 		validateId("PictureGroup", "PictureGroupID", true, true);
 		validateId("TextGroup", "TextGroupID", true, true);
 		validateId("AppGroup", "AppGroupID", true, true);
+		validateId("App", "AppID", true, true);
 		validateId("Presentation", "PresentationID", true, true);
 		validateId("PlayableSequence", "PlayableSequenceID", true, true);
 		validateId("TimedEventSequence", "TimedSequenceID", true, true);
@@ -217,43 +202,65 @@ public class ManifestValidator extends AbstractValidator {
 		validateId("Gallery", "GalleryID", false, true);
 
 		/* Now validate cross-references */
-		validateXRef("Experience", "ContentID", "Metadata");
-		validateXRef("Experience", "PictureGroupID", "PictureGroup");
-		validateXRef("Experience", "TextGroupID", "TextGroup");
-		validateXRef("Experience", "TimedSequenceID", "TimedEventSequence");
-		validateXRef("ExperienceChild", "ExperienceID", "Experience");
+		validateXRef(".//manifest:Experience/manifest:ContentID", "Metadata");
+		validateXRef(".//manifest:Experience/manifest:PictureGroupID", "PictureGroup");
+		validateXRef(".//manifest:Experience/manifest:TextGroupID", "TextGroup");
+		validateXRef(".//manifest:Experience/manifest:TimedSequenceID", "TimedEventSequence");
+		String xpath = ".//manifest:ExperienceChild/manifest:ExperienceID[not(../manifest:ExternalManifestID)]";
+		validateXRef(xpath, "Experience"); 
+		
+		validateXRef(".//manifest:Gallery/manifest:PictureGroupID", "PictureGroup");
+		validateXRef(".//manifest:Gallery/manifest:ContentID", "Metadata");
 
-		validateXRef("Gallery", "PictureGroupID", "PictureGroup");
-		validateXRef("Gallery", "ContentID", "Metadata");
+		validateXRef(".//manifest:Audiovisual/@ContentID", "Metadata");
+		validateXRef(".//manifest:Audiovisual/manifest:PresentationID", "Presentation");
+		validateXRef(".//manifest:Audiovisual/manifest:PlayableSequenceID", "PlayableSequence");
 
-		validateXRef("Audiovisual", "ContentID", "Metadata");
-		validateXRef("Audiovisual", "PresentationID", "Presentation");
-		validateXRef("Audiovisual", "PlayableSequenceID", "PlayableSequence");
+		validateXRef(".//manifest:Clip/manifest:PresentationID", "Presentation");
+		validateXRef(".//manifest:ImageClip/manifest:ImageID", "Image");
 
-		validateXRef("Clip", "PresentationID", "Presentation");
-		validateXRef("ImageClip", "ImageID", "Image");
+		validateXRef(".//manifest:Chapter/manifest:ImageID", "Image");
 
-		validateXRef("Chapter", "ImageID", "Image");
+		validateXRef(".//manifest:Picture/manifest:ImageID", "Image");
+		validateXRef(".//manifest:Picture/manifest:ThumbnailImageID", "Image");
 
-		validateXRef("Picture", "ImageID", "Image");
-		validateXRef("Picture", "ThumbnailImageID", "Image");
+		validateXRef(".//manifest:VideoTrackReference/manifest:VideoTrackID", "Video");
+		validateXRef(".//manifest:AudioTrackReference/manifest:AudioTrackID", "Audio");
+		validateXRef(".//manifest:AncillaryTrackReference/manifest:AncillaryTrackID", "Ancillary");
+		validateXRef(".//manifest:SubtitleTrackReference/manifest:SubtitleTrackID", "Subtitle");
 
-		validateXRef("VideoTrackReference", "VideoTrackID", "Video");
-		validateXRef("AudioTrackReference", "AudioTrackID", "Audio");
-		validateXRef("AncillaryTrackReference", "AncillaryTrackID", "Ancillary");
-		validateXRef("SubtitleTrackReference", "SubtitleTrackID", "Subtitle");
+		validateXRef(".//manifest:TimedEventSequence/manifest:PresentationID", "Presentation");
+		validateXRef(".//manifest:TimedEventSequence/manifest:PlayableSequenceID", "PlayableSequence");
 
-		validateXRef("TimedEventSequence", "PresentationID", "Presentation");
-		validateXRef("TimedEventSequence", "PlayableSequenceID", "PlayableSequence");
+		validateXRef(".//manifest:TimedEvent/manifest:PresentationID", "Presentation");
+		validateXRef(".//manifest:TimedEvent/manifest:PlayableSequenceID", "PlayableSequence");
+		validateXRef(".//manifest:TimedEvent/manifest:ExperienceID", "Experience");
+		validateXRef(".//manifest:TimedEvent/manifest:GalleryID", "Gallery");
+		validateXRef(".//manifest:TimedEvent/manifest:AppGroupID", "AppGroup");
+		validateXRef(".//manifest:TimedEvent/manifest:AppID", "App");
+		validateXRef(".//manifest:TimedEvent/manifest:TextGroupID", "TextGroup");
 
-		validateXRef("TimedEvent", "PresentationID", "Presentation");
-		validateXRef("TimedEvent", "PlayableSequenceID", "PlayableSequence");
-		validateXRef("TimedEvent", "ExperienceID", "Experience");
-		validateXRef("TimedEvent", "GalleryID", "Gallery");
-		validateXRef("TimedEvent", "AppGroupID", "AppGroup");
-		validateXRef("TimedEvent", "TextGroupID", "TextGroup");
-
-		validateXRef("ALIDExperienceMap", "ExperienceID", "Experience");
+		validateXRef(".//manifest:ALIDExperienceMap/manifest:ExperienceID", "Experience");
+		/*
+		 * SPECIAL CASE: For v1.7 and after.... When ExternalManifestID is
+		 * present in a ExperienceChild, there may not be an Experience with
+		 * that ID contained in the same file. That is, the Manifest is valid
+		 * only if the Experience is NOT present."
+		 */
+		HashSet<String> idSet = idSets.get("Experience");
+		xpath = ".//manifest:ExperienceChild/manifest:ExperienceID[../manifest:ExternalManifestID]";
+		XPathExpression<Element> xpExpression = xpfac.compile(xpath, Filters.element(), null,
+				manifestNSpace);
+		List<Element> elementList = xpExpression.evaluate(curRootEl); 
+		for (int i = 0; i < elementList.size(); i++) {
+			Element refEl = (Element) elementList.get(i);
+			String targetId = refEl.getTextNormalize();
+			if (idSet.contains(targetId)) {
+				String msg = "When ExternalManifestID is  present in a ExperienceChild, there may not be an Experience with that ID contained in the same file";
+				logIssue(LogMgmt.TAG_MANIFEST, LogMgmt.LEV_ERR, refEl, msg, null, null, logMsgSrcId);
+				curFileIsValid = false;
+			}
+		}
 
 		checkForOrphans();
 
@@ -263,25 +270,44 @@ public class ManifestValidator extends AbstractValidator {
 		/*
 		 * Validate the usage of controlled vocab (i.e., places where XSD
 		 * specifies a xs:string but the documentation specifies an enumerated
-		 * set of allowed values).
+		 * set of allowed values or otherwise constrained).
 		 */
 		// start with Common Metadata spec..
-		boolean cmOk = validateCMVocab();
+		validateCMVocab();
+		validateResolution("//{md}LocalizedInfo/{md}ArtReference/@resolution");
+		validateResolution("//{manifest}Picture/{manifest}ImageID/@resolution");
+		validateResolution("//{manifest}Picture/{manifest}ThumbnailImageID/@resolution");
 
-		// Now do any defined in the Manifest spec..  
-		JSONArray allowed;  
-		
+		// Now do any defined in Manifest spec..
+		validateManifestVocab();
+
+		validateLocations();
+
+		validateMetadata();
+
+		validateUsage();
+	}
+
+	/**
+	 * 
+	 */
+	private void validateManifestVocab() {
+
+		JSONObject manifestVocab = (JSONObject) getVocabResource("manifest", MAN_VER);
+		if (manifestVocab == null) {
+			return;
+		}
+
+		// Now do any defined in the Manifest spec..
+		JSONArray allowed;
+
 		allowed = manifestVocab.optJSONArray("PictureGroupType");
 		LogReference srcRef = LogReference.getRef("MMM", MAN_VER, "mmm001");
 		validateVocab(manifestNSpace, "PictureGroup", manifestNSpace, "Type", allowed, srcRef, true);
- 
-		allowed= manifestVocab.optJSONArray("TimedEventType");
+
+		allowed = manifestVocab.optJSONArray("TimedEventType");
 		srcRef = LogReference.getRef("MMM", MAN_VER, "mmm002");
 		validateVocab(manifestNSpace, "TimedEvent", manifestNSpace, "Type", allowed, srcRef, true);
-
-		allowed = manifestVocab.optJSONArray("ExperienceType");
-		srcRef = LogReference.getRef("CM", MAN_VER, "mmm_expType");
-		validateVocab(manifestNSpace, "Experience", manifestNSpace, "Type", allowed, srcRef, true);
 
 		allowed = manifestVocab.optJSONArray("AudiovisualType");
 		srcRef = LogReference.getRef("MMM", MAN_VER, "mmm003");
@@ -289,109 +315,120 @@ public class ManifestValidator extends AbstractValidator {
 
 		allowed = manifestVocab.optJSONArray("ExperienceAppType");
 		srcRef = LogReference.getRef("CM", MAN_VER, "mmm_expAppType");
-		validateVocab(manifestNSpace, "Experience", manifestNSpace, "Type", allowed, srcRef, true);
+		validateVocab(manifestNSpace, "App", manifestNSpace, "Type", allowed, srcRef, true);
 
-		allowed = cmVocab.optJSONArray("Parent@relationshipType");
-		srcRef = LogReference.getRef("CM", MD_VER, "cm007");
-		validateVocab(manifestNSpace, "ExperienceChild", manifestNSpace, "Relationship", allowed, srcRef, true);
-
-		allowed = availVocab.optJSONArray("ExperienceCondition");
-		srcRef = LogReference.getRef("CM", MD_VER, "cm007");
-		validateVocab(manifestNSpace, "ExperienceID", null, "@condition", allowed, srcRef, true);
-		validateLocations();
+		JSONObject availVocab = (JSONObject) getVocabResource("avail", AVAIL_VER);
+		if (availVocab != null) {
+			allowed = availVocab.optJSONArray("ExperienceCondition");
+			srcRef = LogReference.getRef("CM", CM_VER, "cm007");
+			validateVocab(manifestNSpace, "ExperienceID", null, "@condition", allowed, srcRef, true);
+		}
 
 	}
 
 	/**
 	 * @return
 	 */
-	protected boolean validateCMVocab() {
-		boolean allOK = true; 
+	protected void validateCMVocab() {
+		JSONObject cmVocab = (JSONObject) getVocabResource("cm", CM_VER);
+		if (cmVocab == null) {
+			String msg = "Unable to validate controlled vocab: missing resource file";
+			loggingMgr.log(LogMgmt.LEV_FATAL, LogMgmt.TAG_MANIFEST, msg, curFile, logMsgSrcId);
+			curFileIsValid = false;
+			return;
+		}
 
 		JSONArray allowed = cmVocab.optJSONArray("WorkType");
-		LogReference srcRef = LogReference.getRef("CM", MD_VER, "cm002");
-		allOK = validateVocab(manifestNSpace, "BasicMetadata", mdNSpace, "WorkType", allowed, srcRef, true) && allOK;
+		LogReference srcRef = LogReference.getRef("CM", CM_VER, "cm002");
+		validateVocab(manifestNSpace, "BasicMetadata", mdNSpace, "WorkType", allowed, srcRef, true);
 
 		allowed = cmVocab.optJSONArray("ColorType");
-		srcRef = LogReference.getRef("CM", MD_VER, "cm003");
-		allOK = validateVocab(manifestNSpace, "BasicMetadata", mdNSpace, "PictureColorType", allowed, srcRef, true)
-				&& allOK;
+		srcRef = LogReference.getRef("CM", CM_VER, "cm003");
+		validateVocab(manifestNSpace, "BasicMetadata", mdNSpace, "PictureColorType", allowed, srcRef, true);
 
 		allowed = cmVocab.optJSONArray("PictureFormat");
-		srcRef = LogReference.getRef("CM", MD_VER, "cm004");
-		allOK = validateVocab(manifestNSpace, "BasicMetadata", mdNSpace, "PictureFormat", allowed, srcRef, true)
-				&& allOK;
+		srcRef = LogReference.getRef("CM", CM_VER, "cm004");
+		validateVocab(manifestNSpace, "BasicMetadata", mdNSpace, "PictureFormat", allowed, srcRef, true);
 
 		allowed = cmVocab.optJSONArray("ReleaseType");
-		srcRef = LogReference.getRef("CM", MD_VER, "cm005");
-		allOK = validateVocab(mdNSpace, "ReleaseHistory", mdNSpace, "ReleaseType", allowed, srcRef, true) && allOK;
+		srcRef = LogReference.getRef("CM", CM_VER, "cm005");
+		validateVocab(mdNSpace, "ReleaseHistory", mdNSpace, "ReleaseType", allowed, srcRef, true);
 
 		allowed = cmVocab.optJSONArray("TitleAlternate@type");
-		srcRef = LogReference.getRef("CM", MD_VER, "cm006");
-		allOK = validateVocab(mdNSpace, "TitleAlternate", null, "@type", allowed, srcRef, true) && allOK;
+		srcRef = LogReference.getRef("CM", CM_VER, "cm006");
+		validateVocab(mdNSpace, "TitleAlternate", null, "@type", allowed, srcRef, true);
 
 		allowed = cmVocab.optJSONArray("Parent@relationshipType");
-		srcRef = LogReference.getRef("CM", MD_VER, "cm007");
-		allOK = validateVocab(mdNSpace, "Parent", null, "@relationshipType", allowed, srcRef, true) && allOK;
+		srcRef = LogReference.getRef("CM", CM_VER, "cm007");
+		validateVocab(mdNSpace, "Parent", null, "@relationshipType", allowed, srcRef, true);
 
 		allowed = cmVocab.optJSONArray("EntryClass");
-		srcRef = LogReference.getRef("CM", MD_VER, "cm008");
-		allOK = validateVocab(mdNSpace, "Entry", mdNSpace, "EntryClass", allowed, srcRef, true) && allOK;
+		srcRef = LogReference.getRef("CM", CM_VER, "cm008");
+		validateVocab(mdNSpace, "Entry", mdNSpace, "EntryClass", allowed, srcRef, true);
+
+		allowed = cmVocab.optJSONArray("Parent@relationshipType");
+		srcRef = LogReference.getRef("CM", CM_VER, "cm007");
+		validateVocab(manifestNSpace, "ExperienceChild", manifestNSpace, "Relationship", allowed, srcRef, true);
+
+		// ----------------------------------------
+		/*
+		 * Validate use of Country identifiers....
+		 */
+		// Usage in Common Metadata XSD...
+		validateRegion(mdNSpace, "Region", mdNSpace, "country");
+		validateRegion(mdNSpace, "DistrTerritory", mdNSpace, "country");
+		validateRegion(mdNSpace, "CountryOfOrigin", mdNSpace, "country");
+
+		// Usage in Manifest XSD....
+		validateRegion(manifestNSpace, "Region", mdNSpace, "country");
+		validateRegion(manifestNSpace, "RegionIncluded", mdNSpace, "country");
+		validateRegion(manifestNSpace, "ExcludedRegion", mdNSpace, "country");
 
 		// --------------- Validate language codes
 		// ----------------------------------------
+		
+		/* First check all usage of the '@language' attribute */
+		validateLanguage(manifestNSpace);
+		
 		/*
 		 * Language codes in INVENTORY:
 		 */
-		allOK = validateLanguage(mdNSpace, "Language", null, null) && allOK;
-		allOK = validateLanguage(mdNSpace, "SubtitleLanguage", null, null) && allOK;
-		allOK = validateLanguage(mdNSpace, "SignedLanguage", null, null) && allOK;
-		allOK = validateLanguage(mdNSpace, "PrimarySpokenLanguage", null, null) && allOK;
-		allOK = validateLanguage(mdNSpace, "OriginalLanguage", null, null) && allOK;
-		allOK = validateLanguage(mdNSpace, "VersionLanguage", null, null) && allOK;
-		allOK = validateLanguage(mdNSpace, "LocalizedInfo", null, "@language") && allOK;
-		allOK = validateLanguage(mdNSpace, "JobDisplay", null, "@language") && allOK;
-		allOK = validateLanguage(mdNSpace, "DisplayName", null, "@language") && allOK;
-		allOK = validateLanguage(mdNSpace, "SortName", null, "@language") && allOK;
-		allOK = validateLanguage(mdNSpace, "TitleAlternate", null, "@language") && allOK;
-		allOK = validateLanguage(manifestNSpace, "TextObject", null, "@language") && allOK;
+		validateLanguage(mdNSpace, "Language", null, null);
+		validateLanguage(mdNSpace, "SubtitleLanguage", null, null);
+		validateLanguage(mdNSpace, "SignedLanguage", null, null);
+		validateLanguage(mdNSpace, "PrimarySpokenLanguage", null, null);
+		validateLanguage(mdNSpace, "OriginalLanguage", null, null);
+		validateLanguage(mdNSpace, "VersionLanguage", null, null); 
 		/*
 		 * PRESENTATION:
 		 */
-		allOK = validateLanguage(manifestNSpace, "SystemLanguage", null, null) && allOK;
-		allOK = validateLanguage(manifestNSpace, "AudioLanguage", null, null) && allOK;
-		allOK = validateLanguage(manifestNSpace, "SubtitleLanguage", null, null) && allOK;
-		allOK = validateLanguage(manifestNSpace, "DisplayLabel", null, "@language") && allOK;
-		allOK = validateLanguage(manifestNSpace, "ImageID", null, "@language") && allOK;
+		validateLanguage(manifestNSpace, "SystemLanguage", null, null);
+		validateLanguage(manifestNSpace, "AudioLanguage", null, null);
+		validateLanguage(manifestNSpace, "SubtitleLanguage", null, null); 
 		/*
 		 * PLAYABLE SEQ:
 		 */
-		allOK = validateLanguage(manifestNSpace, "Clip", null, "@audioLanguage") && allOK;
-		allOK = validateLanguage(manifestNSpace, "ImageClip", null, "@audioLanguage") && allOK;
+		validateLanguage(manifestNSpace, "Clip", null, "@audioLanguage");
+		validateLanguage(manifestNSpace, "ImageClip", null, "@audioLanguage");
 		/*
 		 * PICTURE GROUPS:
 		 */
-		allOK = validateLanguage(manifestNSpace, "LanguageInImage", null, null) && allOK;
-		allOK = validateLanguage(manifestNSpace, "AlternateText", null, "@language") && allOK;
-		allOK = validateLanguage(manifestNSpace, "Caption", null, "@language") && allOK;
+		validateLanguage(manifestNSpace, "LanguageInImage", null, null);
 		/*
 		 * TEXT GROUP:
-		 */
-		allOK = validateLanguage(manifestNSpace, "TextGroup", null, "@language") && allOK;
+		 */ 
+		
 		/*
 		 * EXPERIENCES:
 		 */
-		allOK = validateLanguage(manifestNSpace, "Language", null, null) && allOK;
-		allOK = validateLanguage(manifestNSpace, "ExcludedLanguage", null, null) && allOK;
-		allOK = validateLanguage(manifestNSpace, "AppName", null, "@language") && allOK;
-		allOK = validateLanguage(manifestNSpace, "GalleryName", null, "@language") && allOK;
+		validateLanguage(manifestNSpace, "Language", null, null);
+		validateLanguage(manifestNSpace, "ExcludedLanguage", null, null); 
 
 		validateRatings();
 
 		// ====================================
 		// TODO: DIGITAL ASSET METADATA
 
-		return allOK;
 	}
 
 	// ########################################################################
@@ -416,6 +453,7 @@ public class ManifestValidator extends AbstractValidator {
 				String errMsg = "Invalid syntax for local file location";
 				String details = "Location of a local file must be specified as a relative path";
 				logIssue(LogMgmt.TAG_MANIFEST, LogMgmt.LEV_ERR, clocEl, errMsg, details, srcRef, logMsgSrcId);
+				curFileIsValid = false;
 				continue outterLoop;
 			}
 			if (!PathUtilities.isRelative(containerPath)) {
@@ -436,5 +474,107 @@ public class ManifestValidator extends AbstractValidator {
 				e.printStackTrace();
 			}
 		}
+	}
+
+	/**
+	 * 
+	 */
+	protected void validateMetadata() {
+		String pre = manifestNSpace.getPrefix();
+		/**
+		 * The ContentID alias mechanism is filter for a peer BasicMetadata that
+		 * results in a new BasicMetadata instance with a subset of the
+		 * LocalizedInfo instance in the original BasicMetadata instance. Thus:
+		 * <ul>
+		 * <li>If the a Metatadata element contains a child Alias, it must also
+		 * have as a child a BasicMetadata element for the Alias to filter. This
+		 * may be identified either directly via a child BasicMetadata element
+		 * or indirectly via a ContainerReference.</li>
+		 * 
+		 * <li>If the Alias has a LocalizedPair/LanguageIncluded = 'foobar' then
+		 * the BasicMetadata element must have a child
+		 * LocalizedInfo[@language='foobar']</li>
+		 * </ul>
+		 */
+		XPathExpression<Element> xpExp01 = xpfac.compile(".//" + pre + ":Alias", Filters.element(), null,
+				manifestNSpace);
+		List<Element> aliasElList = xpExp01.evaluate(curRootEl);
+		for (Element aliasEl : aliasElList) {
+			Element mdEl = aliasEl.getParentElement();
+			Element basicMDataEl = mdEl.getChild("BasicMetadata", manifestNSpace);
+			if (basicMDataEl == null) {
+				String errMsg = "Metadata/Alias requires peer BasicMetadata";
+				LogReference srcRef = LogReference.getRef("MMM", "metadataAlias");
+				logIssue(LogMgmt.TAG_MANIFEST, LogMgmt.LEV_ERR, aliasEl, errMsg, null, srcRef, logMsgSrcId);
+				curFileIsValid = false;
+				continue;
+			}
+			XPathExpression<Element> xpExp02 = xpfac.compile(".//" + pre + ":LanguageIncluded", Filters.element(), null,
+					manifestNSpace);
+			List<Element> langElList = xpExp02.evaluate(aliasEl);
+			for (Element langEl : langElList) {
+				String includedLang = langEl.getTextNormalize();
+				XPathExpression<Element> xpExp03 = xpfac.compile(
+						".//" + mdNSpace.getPrefix() + ":LocalizedInfo[@language='" + includedLang + "']",
+						Filters.element(), null, manifestNSpace, mdNSpace);
+				Element locInfoEL = xpExp03.evaluateFirst(basicMDataEl);
+				if (locInfoEL == null) {
+					String errMsg = "IncludedLanguage not supported by BasicMetadata/LocalizedInfo";
+					LogReference srcRef = LogReference.getRef("MMM", "metadataAlias");
+					logIssue(LogMgmt.TAG_MANIFEST, LogMgmt.LEV_ERR, langEl, errMsg, null, srcRef, logMsgSrcId);
+					curFileIsValid = false;
+
+				}
+			}
+		}
+	}
+
+	/*
+	 * (non-Javadoc)
+	 * 
+	 * @see com.movielabs.mddflib.util.CMValidator#validateUsage()
+	 */
+	protected void validateUsage() {
+		// TODO Auto-generated method stub
+		loggingMgr.log(LogMgmt.LEV_INFO, LogMgmt.LEV_INFO, "Validating structure...", curFile, LOGMSG_ID);
+
+		/*
+		 * Load JSON that defines various constraints on structure of the XML
+		 * This is version-specific but not all schema versions have their own
+		 * unique struct file (e.g., a minor release may be compatible with a
+		 * previous release).
+		 */
+		String structVer = null;
+		switch (MAN_VER) {
+		case "1.7":
+			structVer = "1.7";
+			break;
+		default:
+			// Not supported for the version
+			return;
+		}
+
+		JSONObject structDefs = XmlIngester.getMddfResource("structure_manifest", structVer);
+		if (structDefs == null) {
+			// LOG a FATAL problem.
+			String msg = "Unable to process; missing structure definitions for Manifest v" + MAN_VER;
+			loggingMgr.log(LogMgmt.LEV_FATAL, LogMgmt.TAG_MANIFEST, msg, curFile, logMsgSrcId);
+			return;
+		}
+
+		JSONObject rqmtSet = structDefs.getJSONObject("StrucRqmts");
+		Iterator<String> keys = rqmtSet.keys();
+		while (keys.hasNext()) {
+			String key = keys.next();
+			JSONObject rqmtSpec = rqmtSet.getJSONObject(key);
+			// NOTE: This block of code requires a 'targetPath' be defined
+			if (rqmtSpec.has("targetPath")) {
+				loggingMgr.log(LogMgmt.LEV_DEBUG, LogMgmt.TAG_MANIFEST, "Structure check; key= " + key, curFile,
+						logMsgSrcId);
+				curFileIsValid = structHelper.validateDocStructure(curRootEl, rqmtSpec) && curFileIsValid;
+			}
+		}
+
+		return;
 	}
 }

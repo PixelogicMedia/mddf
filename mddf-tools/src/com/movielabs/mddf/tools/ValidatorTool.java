@@ -42,6 +42,8 @@ import javax.swing.filechooser.FileFilter;
 import javax.swing.filechooser.FileNameExtensionFilter;
 import javax.swing.tree.TreePath;
 
+import org.jdom2.Document;
+
 import javax.swing.JButton;
 
 import java.awt.event.ActionEvent;
@@ -62,10 +64,12 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.ExecutionException;
 
 import javax.swing.ButtonGroup;
 import javax.swing.DefaultComboBoxModel;
@@ -79,6 +83,7 @@ import javax.swing.JCheckBoxMenuItem;
 import javax.swing.JRadioButtonMenuItem;
 import javax.swing.JSeparator;
 
+import com.movielabs.mddf.MddfContext.FILE_FMT;
 import com.movielabs.mddf.tools.ValidationController;
 import com.movielabs.mddf.tools.util.AboutDialog;
 import com.movielabs.mddf.tools.util.logging.AdvLogPanel;
@@ -86,9 +91,12 @@ import com.movielabs.mddf.tools.util.logging.LogNavPanel;
 import com.movielabs.mddf.tools.util.logging.LoggerWidget;
 import com.movielabs.mddf.tools.util.xml.EditorMgr;
 import com.movielabs.mddf.tools.util.xml.SimpleXmlEditor;
+import com.movielabs.mddflib.avails.xlsx.TemplateWorkBook;
+import com.movielabs.mddflib.avails.xml.AvailsWrkBook;
 import com.movielabs.mddflib.logging.LogEntryFolder;
 import com.movielabs.mddflib.logging.LogEntryNode;
 import com.movielabs.mddflib.logging.LogMgmt;
+import com.movielabs.mddflib.util.Translator;
 import com.movielabs.mddflib.util.xml.XmlIngester;
 import com.movielabs.mddf.tools.util.FileChooserDialog;
 import com.movielabs.mddf.tools.util.HeaderPanel;
@@ -97,6 +105,8 @@ import java.awt.Dimension;
 import java.awt.Toolkit;
 import javax.swing.ImageIcon;
 import javax.swing.SwingConstants;
+import javax.swing.SwingWorker;
+import javax.swing.UIManager;
 
 /**
  * @author L. Levin, Critical Architectures LLC
@@ -108,12 +118,195 @@ public abstract class ValidatorTool extends GenericTool implements TreeSelection
 		MANIFEST, AVAILS
 	}
 
+	public boolean running = false;
+
+	public class ValidationWorker extends SwingWorker<Void, StatusMsg> {
+
+		private ValidationController controller;
+		private String srcPath;
+		private String uxProfile;
+		private List<String> useCases;
+
+		public ValidationWorker(ValidationController controller, String srcPath, String uxProfile,
+				List<String> useCases) {
+			this.controller = controller;
+			this.srcPath = srcPath;
+			this.uxProfile = uxProfile;
+			this.useCases = useCases;
+		}
+
+		@Override
+		protected Void doInBackground() throws Exception {
+			setRunningState(true);
+			frame.setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
+			getTxtStatus().setText("Starting validation.....");
+			consoleLogger.collapse();
+			try {
+				controller.validate(srcPath, uxProfile, useCases);
+				refreshEditor(srcPath);
+			} catch (IOException e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+				consoleLogger.log(LogMgmt.LEV_ERR, LogMgmt.TAG_N_A, e.getMessage(), null, "UI");
+				getTxtStatus().setText(e.getMessage());
+			}
+			consoleLogger.expand();
+			((Component) consoleLogger).invalidate();
+			((Component) consoleLogger).repaint();
+			frame.setCursor(null); // turn off the wait cursor
+			setRunningState(false);
+			return null;
+		}
+
+		protected void done() {
+			try { 
+				getTxtStatus().setText("Done");
+				get();
+			} catch (ExecutionException e) {
+				e.getCause().printStackTrace();
+				consoleLogger.log(LogMgmt.LEV_FATAL, LogMgmt.TAG_N_A, e.getMessage(), null, "UI");
+			} catch (InterruptedException e) {
+				e.getCause().printStackTrace();
+			}
+			frame.setCursor(null); // turn off the wait cursor
+			setRunningState(false);
+		}
+	}
+
+	public class TranslationWorker extends SwingWorker<Void, StatusMsg> {
+
+		private Document xmlDoc;
+		private EnumSet<FILE_FMT> selections;
+		private String dirPath;
+		private String outFileName;
+		private boolean appendVersion;
+
+		public TranslationWorker(Document xmlDoc, EnumSet<FILE_FMT> selections, String dirPath, String outFileName,
+				boolean appendVersion) {
+			this.xmlDoc = xmlDoc;
+			this.selections = selections;
+			this.dirPath = dirPath;
+			this.outFileName = outFileName;
+			this.appendVersion = appendVersion;
+		}
+
+		@Override
+		protected Void doInBackground() throws Exception {
+			setRunningState(true);
+			frame.setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
+			getTxtStatus().setText("Starting translation.....");
+			Translator.translateAvails(xmlDoc, selections, dirPath, outFileName, appendVersion, consoleLogger);
+			frame.setCursor(null); // turn off the wait cursor
+			setRunningState(false);
+			return null;
+		}
+
+		protected void done() {
+			try {
+				getTxtStatus().setText("Done");
+				get();
+			} catch (ExecutionException e) {
+				e.getCause().printStackTrace();
+				consoleLogger.log(LogMgmt.LEV_FATAL, LogMgmt.TAG_N_A, e.getMessage(), null, "UI");
+			} catch (InterruptedException e) {
+				e.getCause().printStackTrace();
+			}
+			frame.setCursor(null); // turn off the wait cursor
+			setRunningState(false);
+		}
+	}
+
+	public class CompressionWorker extends SwingWorker<Void, StatusMsg> {
+		private File srcFile;
+		private String dirPath;
+		private String fileName;
+
+		public CompressionWorker(File srcFile, String dirPath, String fileName) {
+			super();
+			this.srcFile = srcFile;
+			this.dirPath = dirPath;
+			this.fileName = fileName;
+		}
+
+		@Override
+		protected Void doInBackground() throws Exception {
+			setRunningState(true);
+			frame.setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
+			getTxtStatus().setText("Starting compression.....");
+			AvailsWrkBook.compress(srcFile, dirPath, fileName);
+			frame.setCursor(null); // turn off the wait cursor
+			setRunningState(false);
+			return null;
+		}
+
+		protected void done() {
+			try {
+				getTxtStatus().setText("Done");
+				get();
+			} catch (ExecutionException e) {
+				e.getCause().printStackTrace();
+				consoleLogger.log(LogMgmt.LEV_FATAL, LogMgmt.TAG_N_A, e.getMessage(), null, "UI");
+			} catch (InterruptedException e) {
+				e.getCause().printStackTrace();
+			}
+			frame.setCursor(null); // turn off the wait cursor
+			setRunningState(false);
+		}
+	}
+	
+
+	public class CleanExcelWorker extends SwingWorker<Void, StatusMsg> {
+		private File srcFile;
+		private String dirPath;
+		private String fileName;
+
+		public CleanExcelWorker(File srcFile, String dirPath, String fileName) {
+			super();
+			this.srcFile = srcFile;
+			this.dirPath = dirPath;
+			this.fileName = fileName;
+		}
+
+		@Override
+		protected Void doInBackground() throws Exception {
+			setRunningState(true);
+			frame.setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
+			getTxtStatus().setText("Starting clone-n-clean.....");
+			LogMgmt logger = getConsoleLogPanel();
+			TemplateWorkBook.clone(srcFile, dirPath, fileName, logger);
+			frame.setCursor(null); // turn off the wait cursor
+			setRunningState(false);
+			return null;
+		}
+
+		protected void done() {
+			try {
+				getTxtStatus().setText("Done");
+				get();
+			} catch (ExecutionException e) {
+				e.getCause().printStackTrace();
+				consoleLogger.log(LogMgmt.LEV_FATAL, LogMgmt.TAG_N_A, e.getMessage(), null, "UI");
+			} catch (InterruptedException e) {
+				e.getCause().printStackTrace();
+			}
+			frame.setCursor(null); // turn off the wait cursor
+			setRunningState(false);
+		}
+	}
+
+	public static class StatusMsg {
+		private final String msg;
+
+		StatusMsg(String msg) {
+			this.msg = msg;
+		}
+	}
+
 	protected static final int MAX_RECENT = 8;
 	private static final String PROP_KEY_includeInfo = "pref.log.includeInfo";
 	private static final String PROP_KEY_minLogLevel = "pref.log.minLevel";
 	protected static ValidatorTool tool;
 	protected String htmlDocUrl;
-	protected String appVersion = "t.b.d.";
 	protected Context context = null;
 	protected String contextId; // version suitable for constructing paths,
 								// URLs, or property names
@@ -146,7 +339,11 @@ public abstract class ValidatorTool extends GenericTool implements TreeSelection
 	protected Map<String, File> selectedFiles = new HashMap<String, File>();
 	private JMenu fileRecentMenu;
 	protected boolean inputSrcTFieldLocked = false;
-	protected FileFilter inputFileFilter = new FileNameExtensionFilter("XML file", "xml");
+	protected FileFilter inputFileFilter = null;
+	private JPanel statusPanel;
+	private JTextField txtStatus;
+	private JMenuItem openFileMI;
+	private JMenuItem runScriptMI;
 
 	/**
 	 * Returns the singleton instance of the currently executing tool.
@@ -223,8 +420,8 @@ public abstract class ValidatorTool extends GenericTool implements TreeSelection
 		});
 		// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 		consoleLogger = getConsoleLogPanel();
-		JPanel statusPanel = new JPanel();
-		frame.getContentPane().add(statusPanel, BorderLayout.SOUTH);
+
+		frame.getContentPane().add(getStatusPanel(), BorderLayout.SOUTH);
 
 		mainPanel = new JPanel();
 		frame.getContentPane().add(mainPanel, BorderLayout.CENTER);
@@ -262,6 +459,16 @@ public abstract class ValidatorTool extends GenericTool implements TreeSelection
 		return validatorToolBar;
 	}
 
+	void setRunningState(boolean state) {
+		this.running = state;
+		boolean enableUI = !running;
+		openFileMI.setEnabled(enableUI);
+		openFileMI.setEnabled(enableUI);
+		runScriptMI.setEnabled(enableUI);
+		editFileBtn.setEnabled(enableUI);
+		inputSrcTField.setEnabled(enableUI);
+	}
+
 	/**
 	 * @return
 	 */
@@ -272,6 +479,10 @@ public abstract class ValidatorTool extends GenericTool implements TreeSelection
 			editFileBtn.addMouseListener(new MouseAdapter() {
 				@Override
 				public void mouseClicked(MouseEvent e) {
+					if (running) {
+						editFileBtn.setEnabled(false);
+						return;
+					}
 					editFile();
 				}
 			});
@@ -307,6 +518,10 @@ public abstract class ValidatorTool extends GenericTool implements TreeSelection
 			runValidatorBtn.addMouseListener(new MouseAdapter() {
 				@Override
 				public void mouseClicked(MouseEvent e) {
+					if (running) {
+						runValidatorBtn.setEnabled(false);
+						return;
+					}
 					runTool();
 				}
 			});
@@ -325,6 +540,17 @@ public abstract class ValidatorTool extends GenericTool implements TreeSelection
 		return headerPanel;
 	}
 
+	/**
+	 * @return
+	 */
+	protected Component getStatusPanel() {
+		if (statusPanel == null) {
+			statusPanel = new JPanel();
+			statusPanel.add(getTxtStatus());
+		}
+		return statusPanel;
+	}
+
 	protected JMenuBar getMenuBar() {
 		if (menuBar == null) {
 			menuBar = new JMenuBar();
@@ -332,7 +558,7 @@ public abstract class ValidatorTool extends GenericTool implements TreeSelection
 			JMenu fileMenu = new JMenu("File");
 			menuBar.add(fileMenu);
 
-			JMenuItem openFileMI = new JMenuItem("Open File...");
+			openFileMI = new JMenuItem("Open File...");
 			openFileMI.addActionListener(new ActionListener() {
 
 				@Override
@@ -345,8 +571,8 @@ public abstract class ValidatorTool extends GenericTool implements TreeSelection
 
 			fileMenu.add(getFileRecentMenu());
 
-			JMenuItem menuItem1 = new JMenuItem("Run Script..");
-			menuItem1.addActionListener(new ActionListener() {
+			runScriptMI = new JMenuItem("Run Script..");
+			runScriptMI.addActionListener(new ActionListener() {
 
 				@Override
 				public void actionPerformed(ActionEvent e) {
@@ -354,7 +580,7 @@ public abstract class ValidatorTool extends GenericTool implements TreeSelection
 				}
 
 			});
-			fileMenu.add(menuItem1);
+			fileMenu.add(runScriptMI);
 
 			JMenuItem menuItem2 = new JMenuItem("Exit");
 			menuItem2.addActionListener(new ActionListener() {
@@ -479,7 +705,7 @@ public abstract class ValidatorTool extends GenericTool implements TreeSelection
 					dialog.addEntry("Build", "<b>mddflib S/W Version:</b> <tt>" + libVersion + "</tt>");
 					dialog.addEntry("Build", "<b>mddflib Build Date:</b> <tt>" + libBuildDate + "</tt><hr/>");
 					dialog.addTab("License");
-					dialog.addEntry("License", "Copyright Motion Picture Laboratories, Inc. 2016<br/>");
+					dialog.addEntry("License", "Copyright Motion Picture Laboratories, Inc. 2017<br/>");
 					dialog.addEntry("License", license);
 					dialog.setLocationRelativeTo(frame);
 					dialog.setVisible(true);
@@ -623,14 +849,16 @@ public abstract class ValidatorTool extends GenericTool implements TreeSelection
 			loggingMenu.add(((AdvLogPanel) consoleLogger).createSaveLogMenu());
 		}
 		return loggingMenu;
+
 	}
 
 	protected LoggerWidget getConsoleLogPanel() {
 		if (consoleLogger == null) {
 			consoleLogger = new AdvLogPanel();
+			((AdvLogPanel) consoleLogger).setStatusDisplay(getTxtStatus());
 			LogNavPanel logNav = ((AdvLogPanel) consoleLogger).getLogNavPanel();
 			// listen for user selections..
-			logNav.addListener(this); 
+			logNav.addListener(this);
 			/*
 			 * configure based on last saved user-specific settings..
 			 */
@@ -659,6 +887,10 @@ public abstract class ValidatorTool extends GenericTool implements TreeSelection
 
 				@Override
 				public void mouseClicked(MouseEvent e) {
+					if (running) {
+						inputSrcTField.setEnabled(false);
+						return;
+					}
 					openFile();
 				}
 			});
@@ -667,6 +899,9 @@ public abstract class ValidatorTool extends GenericTool implements TreeSelection
 	}
 
 	protected void openFile() {
+		if (running) {
+			return;
+		}
 		// trigger the FileChooser dialog
 		File targetFile = FileChooserDialog.getPath("Source Folder", null, inputFileFilter, "srcManifest", tool.frame,
 				JFileChooser.FILES_AND_DIRECTORIES);
@@ -685,7 +920,7 @@ public abstract class ValidatorTool extends GenericTool implements TreeSelection
 	 *            the fileInputDir to set
 	 */
 	protected void setFileInputDir(File target) {
-		if (inputSrcTFieldLocked) {
+		if (inputSrcTFieldLocked || running) {
 			/*
 			 * runTool() locks and unlocks this field to deal with a minor but
 			 * annoying bug resulting from it's collapsing the log tree.
@@ -871,26 +1106,26 @@ public abstract class ValidatorTool extends GenericTool implements TreeSelection
 		fileOutDir.getAbsolutePath();
 		controller = getController();
 		controller.setValidation(true, validateConstraintsCBox.isSelected(), validateBestPracCBox.isSelected());
-		try {
-			controller.validate(srcPath, uxProfile, useCases);
-			refreshEditor(srcPath);
-		} catch (IOException e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
-			consoleLogger.log(LogMgmt.LEV_ERR, LogMgmt.TAG_N_A, e.getMessage(), fileInputDir, "UI");
-		}
+		// ....................................................
+		runInBackground(srcPath, uxProfile, useCases);
+		// .................................................
 		frame.setCursor(null); // turn off the wait cursor
 		consoleLogger.expand();
 		inputSrcTFieldLocked = false;
 	}
 
+	protected void runInBackground(String srcPath, String uxProfile, List<String> useCases) {
+		SwingWorker<Void, StatusMsg> worker = new ValidationWorker(controller, srcPath, uxProfile, useCases);
+		worker.execute();
+	}
+
 	/**
-	 * If there is already an Editor for the specified file, update the log-entries
-	 * markers
+	 * If there is already an Editor for the specified file, update the
+	 * log-entries markers
 	 * 
 	 * @param srcPath
 	 */
-	protected void refreshEditor(String srcPath) { 
+	protected void refreshEditor(String srcPath) {
 		SimpleXmlEditor xmlEditor = EditorMgr.getSingleton().getEditorFor(srcPath);
 		if (xmlEditor != null) {
 			LogEntryFolder logFolder = consoleLogger.getFileFolder(xmlEditor.getCurFile());
@@ -928,7 +1163,7 @@ public abstract class ValidatorTool extends GenericTool implements TreeSelection
 	 */
 	public ValidationController getController() {
 		if (controller == null) {
-			controller = new ValidationController(context, consoleLogger);
+			controller = new ValidationController(consoleLogger);
 		}
 		return controller;
 	}
@@ -957,4 +1192,47 @@ public abstract class ValidatorTool extends GenericTool implements TreeSelection
 		System.exit(0);
 	}
 
+	public JTextField getTxtStatus() {
+		if (txtStatus == null) {
+			txtStatus = new JTextField();
+			txtStatus.setText("Status:");
+			txtStatus.setBackground(UIManager.getColor("OptionPane.questionDialog.titlePane.background"));
+			txtStatus.setEditable(false);
+			txtStatus.setColumns(90);
+		}
+		return txtStatus;
+	}
+
+	public void showBusy(boolean busy) {
+		if (busy) {
+			frame.setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
+		} else {
+			frame.setCursor(null);
+		}
+
+	}
+
+	public void runTranslation(Document doc, EnumSet<FILE_FMT> selections, String outputDir, String outputFilePrefix,
+			boolean addVersion) {
+		SwingWorker<Void, StatusMsg> worker = new ValidatorTool.TranslationWorker(doc, selections, outputDir,
+				outputFilePrefix, addVersion);
+		worker.execute();
+	}
+
+	public void compress(File srcFile, String dirPath, String fileName) {
+		SwingWorker<Void, StatusMsg> worker = new ValidatorTool.CompressionWorker(srcFile, dirPath, fileName);
+		worker.execute();
+	}
+
+	public void cleanup(File srcFile, String dirPath, String fileName) {
+		SwingWorker<Void, StatusMsg> worker = new ValidatorTool.CleanExcelWorker(srcFile, dirPath, fileName);
+		worker.execute();
+	}
+
+	/**
+	 * @return the running
+	 */
+	public boolean isRunning() {
+		return running;
+	}
 }

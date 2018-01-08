@@ -5,3 +5,5 @@
 /.project
 /logs/
 /test/
+/tmp/
+/.classpath

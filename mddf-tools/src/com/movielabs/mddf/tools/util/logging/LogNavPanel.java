@@ -24,6 +24,7 @@ package com.movielabs.mddf.tools.util.logging;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
+import java.awt.Point;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.awt.event.MouseAdapter;
@@ -56,16 +57,16 @@ import javax.swing.tree.TreeSelectionModel;
 import org.jdom2.Document;
 import com.movielabs.mddf.MddfContext.FILE_FMT;
 import com.movielabs.mddf.MddfContext.MDDF_TYPE;
+import com.movielabs.mddf.tools.MaskerDialog;
 import com.movielabs.mddf.tools.TranslatorDialog;
-import com.movielabs.mddf.tools.ValidationController;
 import com.movielabs.mddf.tools.ValidatorTool;
+import com.movielabs.mddf.tools.util.FileChooserDialog;
 import com.movielabs.mddf.tools.util.xml.EditorMgr;
 import com.movielabs.mddf.tools.util.xml.SimpleXmlEditor;
 import com.movielabs.mddflib.logging.LogEntryFolder;
 import com.movielabs.mddflib.logging.LogEntryNode;
 import com.movielabs.mddflib.logging.LogMgmt;
 import com.movielabs.mddflib.logging.LogReference;
-import com.movielabs.mddflib.util.Translator;
 
 /**
  * A <tt>JPanel</tt> that displays a <tt>JTree</tt> containing all log entries
@@ -164,16 +165,82 @@ public class LogNavPanel extends JPanel {
 						FILE_FMT curFmt = fileFolder.getMddfFormat();
 						File srcFile = fileFolder.getFile();
 						xlateDialog.setContext(curFmt, srcFile);
+						Point p = tree.getLocationOnScreen();
+						xlateDialog.setLocation((int) p.getX(), (int) p.getY());
 						xlateDialog.setVisible(true);
 						EnumSet<FILE_FMT> selections = xlateDialog.getSelections();
 						if (!selections.isEmpty()) {
-							ValidatorTool curTool = ValidatorTool.getTool();
-							ValidationController controller = curTool.getController();
-							Translator.translateAvails(doc, selections, xlateDialog.getOutputDir(),
-									xlateDialog.getOutputFilePrefix(), parentLogger);
+							ValidatorTool.getTool().runTranslation(doc, selections, xlateDialog.getOutputDir(),
+									xlateDialog.getOutputFilePrefix(), xlateDialog.addVersion());
 						}
 					}
 				});
+
+				JMenuItem compressAvailsMItem = new JMenuItem("Compress ");
+				compressAvailsMItem.setToolTipText("Hide empty Excel columns");
+				add(compressAvailsMItem);
+				FILE_FMT curFmt = fileFolder.getMddfFormat();
+				compressAvailsMItem.setEnabled(curFmt.getEncoding().equals("xlsx"));
+				compressAvailsMItem.addActionListener(new ActionListener() {
+					@Override
+					public void actionPerformed(ActionEvent e) {
+						File srcFile = fileFolder.getFile();
+						File saveToFile = FileChooserDialog.getFilePath("Save file as...", srcFile.getAbsolutePath(),
+								null, "AVAIL", parentLogger);
+						String dirPath;
+						String fileName;
+						if (saveToFile.exists() && saveToFile.isDirectory()) {
+							dirPath = saveToFile.getPath();
+							fileName = fileFolder.getFile().getName();
+						} else {
+							dirPath = saveToFile.getParent();
+							fileName = saveToFile.getName();
+						}
+						ValidatorTool.getTool().compress(srcFile, dirPath, fileName);
+					}
+				});
+
+				JMenuItem reformatAvailsMItem = new JMenuItem("Reformat");
+				reformatAvailsMItem.setToolTipText("Reorder columns; Hide empty columns");
+				add(reformatAvailsMItem);
+				curFmt = fileFolder.getMddfFormat();
+				reformatAvailsMItem.setEnabled(curFmt.getEncoding().equals("xlsx"));
+				reformatAvailsMItem.addActionListener(new ActionListener() {
+					@Override
+					public void actionPerformed(ActionEvent e) {
+						File srcFile = fileFolder.getFile();
+						File saveToFile = FileChooserDialog.getFilePath("Save file as...", srcFile.getAbsolutePath(),
+								null, "AVAIL", parentLogger);
+						String dirPath;
+						String fileName;
+						if (saveToFile.exists() && saveToFile.isDirectory()) {
+							dirPath = saveToFile.getPath();
+							fileName = fileFolder.getFile().getName();
+						} else {
+							dirPath = saveToFile.getParent();
+							fileName = saveToFile.getName();
+						}
+						ValidatorTool.getTool().cleanup(srcFile, dirPath, fileName);
+					}
+				});
+
+				JMenuItem maskAvailsMItem = new JMenuItem("Export Obfuscated");
+				maskAvailsMItem.setToolTipText("Work-in-progress");
+				maskAvailsMItem.setEnabled(false);
+				add(maskAvailsMItem);
+				maskAvailsMItem.addActionListener(new ActionListener() {
+
+					@Override
+					public void actionPerformed(ActionEvent e) {
+						MaskerDialog xlateDialog = MaskerDialog.getDialog();
+						Document doc = fileFolder.getXml();
+						FILE_FMT curFmt = fileFolder.getMddfFormat();
+						File srcFile = fileFolder.getFile();
+						xlateDialog.setContext(srcFile);
+						xlateDialog.setVisible(true);
+					}
+				});
+
 				add(new JSeparator());
 			}
 
@@ -205,6 +272,9 @@ public class LogNavPanel extends JPanel {
 			/* add listener to trigger a pop-up menu */
 			this.addMouseListener(new MouseAdapter() {
 				public void mousePressed(MouseEvent e) {
+					if (ValidatorTool.getTool().isRunning()) {
+						return;
+					}
 					if (SwingUtilities.isRightMouseButton(e)) {
 						TreePath selPath = tree.getPathForLocation(e.getX(), e.getY());
 						int row = tree.getClosestRowForLocation(e.getX(), e.getY());
@@ -273,7 +343,7 @@ public class LogNavPanel extends JPanel {
 	 */
 	private static final long serialVersionUID = 1L;
 
-	static Map<String, Icon> iconSet = new HashMap();
+	static Map<String, Icon> iconSet = new HashMap<String, Icon>();
 
 	static {
 		/*

@@ -22,7 +22,9 @@
  */
 package com.movielabs.mddflib.avails.xml;
 
+import java.io.File;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -35,8 +37,10 @@ import org.jdom2.Element;
 import org.jdom2.JDOMException;
 import org.jdom2.Namespace;
 import org.jdom2.output.DOMOutputter;
-import com.movielabs.mddflib.avails.xlsx.AvailsSheet;
-import com.movielabs.mddflib.avails.xlsx.AvailsSheet.Version;
+
+import com.movielabs.mddf.MddfContext;
+import com.movielabs.mddf.MddfContext.FILE_FMT;
+import com.movielabs.mddflib.avails.xml.AvailsSheet.Version;
 import com.movielabs.mddflib.logging.LogMgmt;
 import com.movielabs.mddflib.util.xml.SchemaWrapper;
 
@@ -69,13 +73,14 @@ public class XmlBuilder {
 	private String shortDesc;
 	private Map<Element, List<Element>> avail2AssetMap;
 	private Map<Element, List<Element>> avail2TransMap;
+	private Map<Element, Map<String, Element>> avail2EntilementMap;
+	private Map<Element, List<String>> entitlement2IdMap;
 	private Map<String, Element> assetElRegistry;
-	private Map<Element, RowToXmlHelper> element2SrcRowMap;
+	private Map<Element, AbstractRowHelper> element2SrcRowMap;
 	private LogMgmt logger;
-	private DefaultMetadata mdHelper_basic;
-	private EpisodeMetadata mdHelper_episode;
-	private SeasonMetadata mdHelper_season;
 	private Version templateVersion;
+	private File curSrcXslxFile;
+	private MetadataBuilder mdBuilder;
 
 	/**
 	 * @param logger
@@ -85,9 +90,6 @@ public class XmlBuilder {
 	public XmlBuilder(LogMgmt logger, Version sstVersion) {
 		this.logger = logger;
 		this.templateVersion = sstVersion;
-		mdHelper_basic = new DefaultMetadata(this);
-		mdHelper_episode = new EpisodeMetadata(this);
-		mdHelper_season = new SeasonMetadata(this);
 	}
 
 	public boolean setVersion(String availXsdVersion) {
@@ -103,16 +105,15 @@ public class XmlBuilder {
 		availsNSpace = Namespace.getNamespace("avails",
 				"http://www.movielabs.com/schema/avails/v" + availXsdVersion + "/avails");
 		// Load supporting schemas:
-		switch (availXsdVersion) {
-		case "2.1":
-		case "2.2":
-			mdMecVer = "2.4";
-			mdVer = "2.4";
-			break;
-		default:
-			xsdVersion = null;
-			return false;
+
+		FILE_FMT availsFmt = MddfContext.identifyMddfFormat("avails", availXsdVersion);
+		if (availsFmt == null) {
+			throw new IllegalArgumentException("Unsupported Avails Schema version " + availXsdVersion);
 		}
+		Map<String, String> uses = MddfContext.getReferencedXsdVersions(availsFmt);
+
+		mdMecVer = uses.get("MDMEC");
+		mdVer = uses.get("MD");
 		mdMecSchema = SchemaWrapper.factory("mdmec-v" + mdMecVer);
 		mdMecNSpace = Namespace.getNamespace("mdmec", "http://www.movielabs.com/schema/mdmec/v" + mdMecVer);
 
@@ -124,8 +125,6 @@ public class XmlBuilder {
 			return false;
 		}
 		xsdVersion = availXsdVersion;
-		String msg = "XmlBuilder initialized for v" + availXsdVersion;
-		logger.log(LogMgmt.LEV_INFO, LogMgmt.TAG_AVAIL, msg, null, moduleId);
 		return true;
 	}
 
@@ -139,16 +138,20 @@ public class XmlBuilder {
 	/**
 	 * Create an Avails XML document based on the data in the spreadsheet.
 	 * 
+	 * @param aSheet
 	 * @param shortDesc
 	 *            a short description that will appear in the document
+	 * @param srcXslxFile
+	 *            original file (used for logging; may be <tt>null</tt>
 	 * @return a JAXP document
 	 * @throws IllegalStateException
 	 */
-	public Document makeXmlAsJDom(AvailsSheet aSheet, String shortDesc) throws IllegalStateException {
+	public Document makeXmlAsJDom(AvailsSheet aSheet, String shortDesc, File srcXslxFile) throws IllegalStateException {
 		this.shortDesc = shortDesc;
+		this.curSrcXslxFile = srcXslxFile;
 		if (xsdVersion == null) {
 			String msg = "Unable to generate XML from XLSX: XSD version was not set or is unsupported.";
-			logger.log(LogMgmt.LEV_ERR, LogMgmt.TAG_AVAIL, msg, null, moduleId);
+			logger.log(LogMgmt.LEV_ERR, LogMgmt.TAG_XLATE, msg, null, moduleId);
 			throw new IllegalStateException("The XSD version was not set or is unsupported.");
 		}
 		// initialize data structures...
@@ -157,7 +160,11 @@ public class XmlBuilder {
 		assetElRegistry = new HashMap<String, Element>();
 		avail2AssetMap = new HashMap<Element, List<Element>>();
 		avail2TransMap = new HashMap<Element, List<Element>>();
-		element2SrcRowMap = new HashMap<Element, RowToXmlHelper>();
+		avail2EntilementMap = new HashMap<Element, Map<String, Element>>();
+		entitlement2IdMap = new HashMap<Element, List<String>>();
+		element2SrcRowMap = new HashMap<Element, AbstractRowHelper>();
+
+		mdBuilder = new MetadataBuilder(aSheet.getVersion(), logger, this);
 
 		// Create and initialize Document...
 		String xsdUri = "http://www.movielabs.com/schema/avails/v" + xsdVersion + "/avails";
@@ -169,47 +176,53 @@ public class XmlBuilder {
 		root.addNamespaceDeclaration(mdMecNSpace);
 		root.addNamespaceDeclaration(SchemaWrapper.xsiNSpace);
 		doc.setRootElement(root);
+		String msg = "Converting Excel Avails to XML v" + xsdVersion;
+		logger.log(LogMgmt.LEV_INFO, LogMgmt.TAG_XLATE, msg, srcXslxFile, moduleId);
+		msg = "Processing spreadsheet '" + aSheet.getName() + "'; RowCount=" + aSheet.getRowCount();
+		logger.log(LogMgmt.LEV_INFO, LogMgmt.TAG_XLATE, msg, srcXslxFile, moduleId);
 
 		// build document components row by row.
 		try {
-			switch (templateVersion) {
-			case V1_7:
-				for (Row row : aSheet.getRows()) {
-					RowToXmlHelper xmlConverter = new RowToXmlHelper(aSheet, row);
-					xmlConverter.makeAvail(this);
+			rowLoop: for (Row row : aSheet.getRows()) {
+				msg = "Converting row " + row.getRowNum();
+				logger.log(LogMgmt.LEV_DEBUG, LogMgmt.TAG_XLATE, msg, null, moduleId);
+				AbstractRowHelper rowHelper = AbstractRowHelper.createHelper(aSheet, row);
+				if (rowHelper != null) {
+					rowHelper.makeAvail(this);
+				} else {
+					logger.log(LogMgmt.LEV_FATAL, LogMgmt.TAG_XLATE, "Unsupported XLSX version", srcXslxFile, moduleId);
+					break rowLoop;
 				}
-				break;
-			case V1_6:
-				for (Row row : aSheet.getRows()) {
-					RowToXmlHelper xmlConverter = new RowToXmlHelperV1_6(aSheet, row);
-					xmlConverter.makeAvail(this);
-				}
-				break;
-			default:
-				break;
 			}
 		} catch (Exception e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
+			msg = "Exception while ingesting XLSX: "+e.getLocalizedMessage();
+			logger.log(LogMgmt.LEV_FATAL, LogMgmt.TAG_XLATE, msg, srcXslxFile, moduleId);
 			return null;
 		}
+
 		// Final assembly in correct order..
 		Iterator<Element> alidIt = availElRegistry.values().iterator();
 		while (alidIt.hasNext()) {
 			Element nextAvailEl = alidIt.next();
 			Element sDescEl = nextAvailEl.getChild("ShortDescription", availsNSpace);
 			int index = nextAvailEl.indexOf(sDescEl) + 1;
+			Map<String, Element> seMap = avail2EntilementMap.get(nextAvailEl);
+			if (seMap != null && !seMap.isEmpty()) {
+				Collection<Element> seSet = seMap.values();
+				nextAvailEl.addContent(index, seSet);
+			}
 			nextAvailEl.addContent(index, avail2TransMap.get(nextAvailEl));
 			nextAvailEl.addContent(index, avail2AssetMap.get(nextAvailEl));
-
+			finalizeAssetMetadata(nextAvailEl);
 			root.addContent(nextAvailEl);
 		}
-
+		msg = "Completed ingesting XLSX file";
+		logger.log(LogMgmt.LEV_INFO, LogMgmt.TAG_XLATE, msg, srcXslxFile, moduleId);
 		return doc;
 	}
 
 	public org.w3c.dom.Document makeXmlAsW3C(AvailsSheet aSheet, String shortDesc) throws IllegalStateException {
-		Document jdomDoc = makeXmlAsJDom(aSheet, shortDesc);
+		Document jdomDoc = makeXmlAsJDom(aSheet, shortDesc, null);
 		DOMOutputter domOut = new DOMOutputter();
 		try {
 			return domOut.output(jdomDoc);
@@ -230,17 +243,19 @@ public class XmlBuilder {
 	 * @param curRow
 	 * @return
 	 */
-	Element getAvailElement(RowToXmlHelper curRow) {
+	Element getAvailElement(AbstractRowHelper curRow) {
 		Pedigree alidPedigree = curRow.getPedigreedData("Avail/ALID");
 		/*
 		 * TODO: next line throws a NullPtrException if column is missing. How
 		 * do we handle?
 		 */
 		String alid = alidPedigree.getRawValue();
-		logger.logIssue(LogMgmt.TAG_AVAIL, LogMgmt.LEV_DEBUG, null, "Looking for Avail with ALID=["+alid+"]", null, null, moduleId);
+		logger.logIssue(LogMgmt.TAG_XLATE, LogMgmt.LEV_DEBUG, curSrcXslxFile,
+				"Looking for Avail with ALID=[" + alid + "]", null, null, moduleId);
 		Element availEL = availElRegistry.get(alid);
 		if (availEL == null) {
-			logger.logIssue(LogMgmt.TAG_AVAIL, LogMgmt.LEV_DEBUG, null, "Building Avail with ALID=["+alid+"]", null, null, moduleId);
+			logger.logIssue(LogMgmt.TAG_XLATE, LogMgmt.LEV_DEBUG, curSrcXslxFile,
+					"Building Avail with ALID=[" + alid + "]", null, null, moduleId);
 			availEL = new Element("Avail", getAvailsNSpace());
 			/*
 			 * No data value for the Avail element itself but for purposes of
@@ -277,14 +292,18 @@ public class XmlBuilder {
 			// Exception Flag
 			curRow.process(availEL, "ExceptionFlag", getAvailsNSpace(), "Avail/ExceptionFlag");
 
-			// Initialize data structures for collecting Assets and Transactions
+			/*
+			 * Initialize data structures for collecting Assets, Transactions,
+			 * and Entitlements.
+			 */
 			avail2AssetMap.put(availEL, new ArrayList<Element>());
 			avail2TransMap.put(availEL, new ArrayList<Element>());
+			avail2EntilementMap.put(availEL, new HashMap<String, Element>());
 		} else {
 			/*
 			 * make sure key values are aligned...
 			 */
-			RowToXmlHelper srcRow = element2SrcRowMap.get(availEL);
+			AbstractRowHelper srcRow = element2SrcRowMap.get(availEL);
 			checkForMatch("Avail/ALID", srcRow, curRow, "Avail");
 			checkForMatch("Avail/DisplayName", srcRow, curRow, "Avail");
 			checkForMatch("Avail/ServiceProvider", srcRow, curRow, "Avail");
@@ -303,7 +322,7 @@ public class XmlBuilder {
 				String details = "AVAIL was 1st defined in row " + row4log + " which specifies AvailAsset/WorkType as "
 						+ srcRow.getData("AvailAsset/WorkType") + " and requires WorkType=" + definedValue;
 				Cell sourceCell = curRow.sheet.getCell("AvailAsset/WorkType", curRow.getRowNumber());
-				logger.logIssue(LogMgmt.TAG_AVAIL, LogMgmt.LEV_ERR, sourceCell, msg, details, null, moduleId);
+				logger.logIssue(LogMgmt.TAG_XLATE, LogMgmt.LEV_ERR, sourceCell, msg, details, null, moduleId);
 			}
 		}
 		return availEL;
@@ -314,7 +333,8 @@ public class XmlBuilder {
 	 * @param srcRow
 	 * @param rowHelper
 	 */
-	private boolean checkForMatch(String colKey, RowToXmlHelper srcRow, RowToXmlHelper curRow, String entityName) {
+	private boolean checkForMatch(String colKey, AbstractRowHelper srcRow, AbstractRowHelper curRow,
+			String entityName) {
 		String definedValue = srcRow.getData(colKey);
 		if (definedValue == null) {
 			// col not defined so we consider it a match
@@ -330,7 +350,7 @@ public class XmlBuilder {
 			String details = entityName + " was 1st defined in row " + row4log + " which specifies " + colKey + " as '"
 					+ definedValue + "'";
 			Cell sourceCell = curRow.sheet.getCell(colKey, curRow.getRowNumber());
-			logger.logIssue(LogMgmt.TAG_AVAIL, LogMgmt.LEV_ERR, sourceCell, msg, details, null, moduleId);
+			logger.logIssue(LogMgmt.TAG_XLATE, LogMgmt.LEV_ERR, sourceCell, msg, details, null, moduleId);
 			return false;
 		}
 
@@ -340,7 +360,7 @@ public class XmlBuilder {
 	 * @param rowHelper
 	 * @return
 	 */
-	private String mapWorkType(RowToXmlHelper rowHelper) {
+	private String mapWorkType(AbstractRowHelper rowHelper) {
 		String workTypeSS = rowHelper.getData("AvailAsset/WorkType");
 		String availType;
 		switch (workTypeSS) {
@@ -424,42 +444,15 @@ public class XmlBuilder {
 		case "xs:anyURI":
 			break;
 		case "xs:duration":
-			/**
-			 * Input is one of the following:
-			 * <ul>
-			 * <li>hh</li>
-			 * <li>hh:mm</li>
-			 * <li>hh:mm:ss</li>
-			 * </ul>
-			 * The output format is 'PThhHmmMssS'
-			 */
-			String parts[] = formattedValue.split(":");
-			String xmlValue = "PT" + parts[0] + "H";
-			if (parts.length > 1) {
-				xmlValue = xmlValue + parts[1] + "M";
-				if (parts.length > 2) {
-					xmlValue = xmlValue + parts[2] + "S";
-				}
-			}
-			formattedValue = xmlValue;
+			formattedValue = formatDuration(formattedValue);
 			break;
 		case "xs:boolean":
-			if (formattedValue.equals("Yes")) {
-				formattedValue = "true";
-			} else if (formattedValue.equals("No")) {
-				formattedValue = "false";
-			}
+			formattedValue = formatBoolean(formattedValue);
 			break;
 		case "xs:date":
 			break;
 		case "xs:dateTime":
-			if (formattedValue.matches("[\\d]{4}-[\\d]{2}-[\\d]{2}")) {
-				if (elementName.startsWith("End")) {
-					formattedValue = formattedValue + "T23:59:59";
-				} else {
-					formattedValue = formattedValue + "T00:00:00";
-				}
-			}
+			formattedValue = formatDateTime(formattedValue, elementName.startsWith("End"));
 			break;
 		default:
 			// throw new IllegalArgumentException("Data type '" + type + "' not
@@ -467,6 +460,54 @@ public class XmlBuilder {
 
 		}
 		return formattedValue;
+	}
+
+	/**
+	 * @param rawValue
+	 * @return
+	 */
+	public String formatBoolean(String input) {
+		if (input.equals("Yes")) {
+			return "true";
+		} else if (input.equals("No")) {
+			return "false";
+		}
+		return null;
+	}
+
+	String formatDateTime(String input, boolean roundOff) {
+		String output = "";
+		if (input.matches("[\\d]{4}-[\\d]{2}-[\\d]{2}")) {
+			// if (elementName.startsWith("End")) {
+			if (!roundOff) {
+				output = input + "T23:59:59";
+			} else {
+				output = input + "T00:00:00";
+			}
+		}
+		return output;
+	}
+
+	String formatDuration(String input) {
+		/**
+		 * Input is one of the following:
+		 * <ul>
+		 * <li>hh</li>
+		 * <li>hh:mm</li>
+		 * <li>hh:mm:ss</li>
+		 * </ul>
+		 * The output format is 'PThhHmmMssS'
+		 */
+		String parts[] = input.split(":");
+		String xmlValue = "PT" + parts[0] + "H";
+		if (parts.length > 1) {
+			xmlValue = xmlValue + parts[1] + "M";
+			if (parts.length > 2) {
+				xmlValue = xmlValue + parts[2] + "S";
+			}
+		}
+		return xmlValue;
+
 	}
 
 	private SchemaWrapper getSchema(String schema) {
@@ -503,10 +544,34 @@ public class XmlBuilder {
 		transactionList.add(transEl);
 	}
 
+	void addEntitlement(Element avail, String ecosysId, Element eidEl) {
+		Map<String, Element> entitlmentMap = avail2EntilementMap.get(avail);
+		Element seEl = entitlmentMap.get(ecosysId);
+		if (seEl == null) {
+			// new ecosystem for this Avail
+			seEl = new Element("SharedEntitlement", getAvailsNSpace());
+			seEl.setAttribute("ecosystem", ecosysId);
+			entitlmentMap.put(ecosysId, seEl);
+			entitlement2IdMap.put(seEl, new ArrayList<String>());
+		}
+		/*
+		 * Multiple IDs are allowed for any given ecosystem BUT we want to avoid
+		 * redundant entries.
+		 */
+		List<String> idList = entitlement2IdMap.get(seEl);
+		String eid = eidEl.getText();
+		if (idList.contains(eid)) {
+			return;
+		} else {
+			seEl.addContent(eidEl);
+			idList.add(eid);
+		}
+	}
+
 	/**
 	 * @param row
 	 */
-	void createAsset(RowToXmlHelper curRow) {
+	void createAsset(AbstractRowHelper curRow) {
 		/*
 		 * Gen unique key and see if there is a matching Element. Unfortunately
 		 * the key's structure is based on contentID which is sensitive to the
@@ -541,7 +606,7 @@ public class XmlBuilder {
 		 * Check the consistency of the Asset info as originally specified with
 		 * the same fields in the current row.
 		 */
-		RowToXmlHelper srcRow = element2SrcRowMap.get(assetEl);
+		AbstractRowHelper srcRow = element2SrcRowMap.get(assetEl);
 		boolean match = true;
 		match = checkForMatch("AvailAsset/WorkType", srcRow, curRow, "Asset") && match;
 		match = checkForMatch("AvailAsset/ContentID", srcRow, curRow, "Asset") && match;
@@ -555,8 +620,26 @@ public class XmlBuilder {
 			String details = "An Asset with " + cidSrc + "=" + contentID
 					+ " was previously defined. Asset-specific fields in row " + row4log + " will be ignored";
 			Cell sourceCell = curRow.sheet.getCell(cidColKey, curRow.getRowNumber());
-			logger.logIssue(LogMgmt.TAG_AVAIL, LogMgmt.LEV_DEBUG, sourceCell, msg, details, null, moduleId);
+			logger.logIssue(LogMgmt.TAG_XLATE, LogMgmt.LEV_DEBUG, sourceCell, msg, details, null, moduleId);
 		}
+		/*
+		 * When dealing with a Movie or Episode, more that 1 ReleaseHistory and
+		 * Rating may be specified per-Asset. We therefore need to check for new
+		 * data on the current row and, if unique, append it to existing Asset
+		 * Metadata. The WorkType will determine which type of Metadata element
+		 * we are looking for.
+		 */
+		// Element metadataEl = null;
+		// switch (workType) {
+		// case "Movie":
+		// metadataEl =mdBuilder.buildMovieMData(curRow);
+		// break;
+		// case "Episode":
+		// metadataEl =mdBuilder.buildTvMData(curRow);
+		// break;
+		// default:
+		// }
+		// assetEl.addContent(metadataEl);
 	}
 
 	/**
@@ -573,23 +656,43 @@ public class XmlBuilder {
 	 * @param assetWorkType
 	 * @param row
 	 */
-	void createAssetMetadata(Element assetEl, String assetWorkType, RowToXmlHelper row) {
-		/*
-		 * Need to determine what metadata structure to use based on the
-		 * Asset/WorkType
-		 */
-		switch (assetWorkType) {
-		case "Season":
-			mdHelper_season.createAssetMetadata(assetEl, row);
-			return;
-		case "Episode":
-			mdHelper_episode.createAssetMetadata(assetEl, row);
-			return;
-		case "Series":
-			return;
-		default:
-			mdHelper_basic.createAssetMetadata(assetEl, row);
-			return;
+	void createAssetMetadata(Element assetEl, String assetWorkType, AbstractRowHelper row) {
+		Element metadataEl = mdBuilder.appendMData(row, assetWorkType);
+		assetEl.addContent(metadataEl);
+	}
+
+	/**
+	 * @param availEl
+	 */
+	private void finalizeAssetMetadata(Element availEl) {
+		List<Element> assetList = availEl.getChildren("Asset", availsNSpace);
+		for (Element nextEl : assetList) {
+			String assetWorkType = nextEl.getChildText("WorkType", availsNSpace);
+			Element mdEl = null;
+			switch (assetWorkType) {
+			case "Season":
+				mdEl = nextEl.getChild("SeasonMetadata", availsNSpace);
+				break;
+			case "Episode":
+				mdEl = nextEl.getChild("EpisodeMetadata", availsNSpace);
+				break;
+			case "Series":
+				mdEl = nextEl.getChild("SeriesMetadata", availsNSpace);
+				break;
+			default:
+				mdEl = nextEl.getChild("Metadata", availsNSpace);
+				break;
+			}
+			if (mdEl != null) {
+				/*
+				 * Is this still needed given new mode of md building?
+				 */
+				// mdHelper_basic.finalize(mdEl);
+			}
 		}
+	}
+
+	void appendToLog(String msg, int logLevel, Cell target) {
+		logger.logIssue(LogMgmt.TAG_XLATE, logLevel, target, msg, null, null, moduleId);
 	}
 }

@@ -24,28 +24,17 @@ package com.movielabs.mddf.tools;
 
 import java.awt.Cursor;
 import java.awt.EventQueue;
-import java.io.IOException;
-import java.util.List;
-
 import javax.swing.JToolBar;
 import javax.swing.UIManager;
 import javax.swing.filechooser.FileNameExtensionFilter;
-
-import org.jdom2.JDOMException;
-
-import com.movielabs.mddf.tools.util.xml.EditorMgr;
-import com.movielabs.mddf.tools.util.xml.SimpleXmlEditor;
-import com.movielabs.mddflib.logging.LogEntryFolder;
-import com.movielabs.mddflib.logging.LogEntryNode;
-import com.movielabs.mddflib.logging.LogMgmt;
 
 /**
  * @author L. Levin, Critical Architectures LLC
  *
  */
 public class AvailsTool extends ValidatorTool {
-	public static final String AVAIL_APP_VER = "v0.9.1";
-	private static final String AVAIL_DOC_VER = "v0.9.1";
+
+	private static final String AVAIL_DOC_VER = "v1.1";
 
 	/**
 	 * Launch the application.
@@ -73,7 +62,6 @@ public class AvailsTool extends ValidatorTool {
 	 */
 	public AvailsTool() {
 		super(Context.AVAILS);
-		super.appVersion = AVAIL_APP_VER;
 		htmlDocUrl = "http://www.movielabs.com/md/avails/validator/" + AVAIL_DOC_VER + "/";
 		/*
 		 * allow use of XLSX formatted Avails files..
@@ -98,18 +86,12 @@ public class AvailsTool extends ValidatorTool {
 		controller = getController();
 		controller.setValidation(true, true, false);
 		inputSrcTFieldLocked = true;
-		consoleLogger.collapse();
-		try {
-			controller.validate(srcPath, null, null);
-			refreshEditor(srcPath);
-		} catch (IOException e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
-			consoleLogger.log(LogMgmt.LEV_ERR, LogMgmt.TAG_N_A, e.getMessage(), null, "UI");
-		}
+		consoleLogger.collapse(); 
+		// ....................................................
+		runInBackground(srcPath, null, null);
+		// .................................................
 		frame.setCursor(null); // turn off the wait cursor
 		consoleLogger.expand();
 		inputSrcTFieldLocked = false;
 	}
-
 }

@@ -31,8 +31,8 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Properties;
 import org.jdom2.Document;
 import org.jdom2.Element;
@@ -46,6 +46,7 @@ import org.jdom2.xpath.XPathFactory;
 import org.xml.sax.SAXParseException;
 
 import com.movielabs.mddf.MddfContext;
+import com.movielabs.mddf.MddfContext.FILE_FMT;
 import com.movielabs.mddflib.logging.IssueLogger;
 import com.movielabs.mddflib.logging.LogMgmt;
 import com.movielabs.mddflib.logging.LogReference;
@@ -58,14 +59,14 @@ import net.sf.json.JSONSerializer;
  *
  */
 public abstract class XmlIngester implements IssueLogger {
-	public static String MD_VER = "2.3";
-	public static String MDMEC_VER = "2.3";
-	public static String MAN_VER = "1.4";
-	public static String AVAIL_VER = "1.7";
+	public static String CM_VER = "2.3";
+	public static String MDMEC_VER = "2.4";
+	public static String MAN_VER = "1.5";
+	public static String AVAIL_VER = "2.1";
 	public static Namespace xsiNSpace = Namespace.getNamespace("xsi", "http://www.w3.org/2001/XMLSchema-instance");
 
 	public static Namespace mdNSpace = Namespace.getNamespace("md",
-			MddfContext.NSPACE_CMD_PREFIX + MD_VER + MddfContext.NSPACE_CMD_SUFFIX);
+			MddfContext.NSPACE_CMD_PREFIX + CM_VER + MddfContext.NSPACE_CMD_SUFFIX);
 
 	public static Namespace mdmecNSpace = Namespace.getNamespace("mdmec",
 			MddfContext.NSPACE_MDMEC_PREFIX + MDMEC_VER + MddfContext.NSPACE_MDMEC_SUFFIX);
@@ -77,10 +78,10 @@ public abstract class XmlIngester implements IssueLogger {
 
 	protected static XPathFactory xpfac = XPathFactory.instance();
 
-	protected static String vocabRsrcPath = MddfContext.RSRC_PATH + "cm_vocab.json";
+	private static Map<String, JSONObject> rsrcCache = new HashMap<String, JSONObject>();
+
 	protected static File srcFile;
 	protected static File sourceFolder;
-	private static JSONObject vocabResource = null;
 
 	protected File curFile;
 	protected String curFileName;
@@ -96,12 +97,63 @@ public abstract class XmlIngester implements IssueLogger {
 		this.loggingMgr = loggingMgr;
 	}
 
-	protected static JSONObject loadVocab(String rsrcPath, String vocabSet) throws JDOMException, IOException {
-		if (vocabResource == null) {
-			vocabResource = loadJSON(rsrcPath);
+	public static JSONObject getMddfResource(String rsrcId, String version) {
+		String rsrcKey = rsrcId + "_v" + version;
+		JSONObject jsonRsrc = getMddfResource(rsrcKey);
+		return jsonRsrc;
+	}
+
+	public static JSONObject getMddfResource(String rsrcId) {
+		String rsrcPath = MddfContext.RSRC_PATH + rsrcId + ".json";
+		JSONObject rsrc = rsrcCache.get(rsrcPath);
+		if (rsrc == null) {
+			try {
+				rsrc = loadJSON(rsrcPath);
+			} catch (Exception e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+				return null;
+			}
+			rsrcCache.put(rsrcPath, rsrc);
 		}
-		JSONObject vocabulary = vocabResource.getJSONObject(vocabSet);
-		return vocabulary;
+		return rsrc;
+	}
+
+	/**
+	 * Return resource defining a version-specific controlled vocabulary set.
+	 * 
+	 * @param rsrcId
+	 * @param rsrcVersion
+	 * @return a JSONObject or <tt>null</tt. if the resource is not accessible
+	 *         or is not valid JSON
+	 */
+	protected static Object getVocabResource(String rsrcId, String rsrcVersion) {
+		String key = rsrcId + "_v" + rsrcVersion;
+		/*
+		 * Check to see if a version is compatible with earlier version
+		 */
+		switch (key) {
+		case "manifest_v1.6.1":
+			key = "manifest_v1.6";
+			break;
+		case "cm_v2.6":
+			key = "cm_v2.5";
+			break;
+		}
+		String rsrcPath = MddfContext.RSRC_PATH + "vocab_" + key + ".json";
+		JSONObject rsrc = (JSONObject) rsrcCache.get(rsrcPath);
+		if (rsrc == null) {
+			try {
+				rsrc = loadJSON(rsrcPath);
+			} catch (Exception e) {
+				System.out.println("Missing MDDF Resc " + rsrcPath);
+				e.printStackTrace();
+				return null;
+			}
+			rsrcCache.put(rsrcPath, rsrc);
+		}
+		Object jsonRsrc = rsrc.get(rsrcId);
+		return jsonRsrc;
 	}
 
 	protected static JSONObject loadJSON(String rsrcPath) throws JDOMException, IOException {
@@ -128,35 +180,6 @@ public abstract class XmlIngester implements IssueLogger {
 		}
 		return props;
 	}
- 
-	/**
-	 * Identify all ALID and determine which experience is used when the ALID is
-	 * accessed by a consumer.
-	 * 
-	 * @param root
-	 * @return
-	 */
-	protected List<String> extractAlidMap(Element root) {
-		List<String> primaryExpSet = new ArrayList<String>();
-		Element mapsEl = root.getChild("ALIDExperienceMaps", manifestNSpace);
-		if (mapsEl == null) {
-			return null;
-		}
-		List<Element> mapEList = mapsEl.getChildren("ALIDExperienceMap", manifestNSpace);
-		Object[] targets = mapEList.toArray();
-		for (int i = 0; i < targets.length; i++) {
-			Element target = (Element) targets[i];
-			/* get the values for ALID and ExperienceID */
-			// Element alidEl = target.getChild("ALID", manifestNSpace);
-			// String alid = alidEl.getTextNormalize();
-			Element expEl = target.getChild("ExperienceID", manifestNSpace);
-			String expId = expEl.getTextNormalize();
-			if (!primaryExpSet.contains(expId)) {
-				primaryExpSet.add(expId);
-			}
-		}
-		return primaryExpSet;
-	}
 
 	protected static String readFile(String file) throws IOException {
 		BufferedReader reader = new BufferedReader(new FileReader(file));
@@ -173,131 +196,6 @@ public abstract class XmlIngester implements IssueLogger {
 		}
 		reader.close();
 		return stringBuilder.toString();
-	}
-
-	/**
-	 * Return an ordered list of child Elements that have the specified
-	 * relationship with the parent or null if unable to sort the children. A
-	 * return value of <tt>null</tt> is, therefore, not the same as returning an
-	 * empty List as the later indicates no matching child Elements were found
-	 * rather than a problem while sorting.
-	 * <p>
-	 * Ordering is determined in one of two ways. If
-	 * <tt>&lt;SequenceInfo&gt;</tt> elements are present they will be used to
-	 * determine the order of the list entries returned. Otherwise ordering is
-	 * indeterminate.
-	 * </p>
-	 * <p>
-	 * Additional restrictions on the use of <tt>&lt;SequenceInfo&gt;</tt>:
-	 * <ul>
-	 * <li><tt>&lt;SequenceInfo&gt;</tt> elements shall be used for either all
-	 * of the children or none of the children. Mixed usage is not allowed.
-	 * <li>SequenceInfo/Number starts with one and increases monotonically for
-	 * each child</li>
-	 * </ul>
-	 * </p>
-	 * 
-	 * @param parentEl
-	 * @param childName
-	 * @param relationship
-	 * @param seqInfoRequired
-	 * @return <tt>List</tt> of child Elements or null if unable to sort the
-	 *         children.
-	 */
-	protected List<Element> getSortedChildren(Element parentEl, String childName, String relationship,
-			boolean seqInfoRequired) {
-		boolean hasErrors = false;
-		// ..........
-		List<Element> allChildList = parentEl.getChildren(childName, manifestNSpace);
-		Element[] firstPass = new Element[allChildList.size()];
-		int lastIndex = -1;
-		for (int i = 0; i < allChildList.size(); i++) {
-			Element nextEl = allChildList.get(i);
-			String relType = nextEl.getChildTextNormalize("Relationship", manifestNSpace);
-			if (relType == null) {
-				String summaryMsg = "Missing Relationship element in " + childName + " element";
-				loggingMgr.logIssue(logMsgDefaultTag, LogMgmt.LEV_WARN, nextEl, summaryMsg, null, null, logMsgSrcId);
-			} else if (relType.equalsIgnoreCase(relationship)) {
-				Element seqEl = nextEl.getChild("SequenceInfo", manifestNSpace);
-				String seqNum = null;
-				if (seqEl != null) {
-					seqNum = seqEl.getChildTextNormalize("Number", mdNSpace);
-					// check for empty string..
-					if (seqNum.isEmpty()) {
-						seqNum = null;
-					}
-				}
-				if (seqInfoRequired && (seqNum == null)) {
-					// Flag as ERROR
-					loggingMgr.logIssue(logMsgDefaultTag, LogMgmt.LEV_ERR, seqEl, "Missing required SequenceInfo", null,
-							null, logMsgSrcId);
-					hasErrors = true;
-				} else if (seqNum != null) {
-					// seqNum should be monotonically increasing starting with 1
-					int index = -1;
-					try {
-						index = Integer.parseInt(seqNum) - 1;
-					} catch (NumberFormatException e) {
-					}
-					if (index < 0) {
-						loggingMgr.logIssue(logMsgDefaultTag, LogMgmt.LEV_ERR, seqEl,
-								"Invalid Number for SequenceInfo (must be a positive integer).", null, null,
-								logMsgSrcId);
-						hasErrors = true;
-					} else if (index >= firstPass.length) {
-						loggingMgr.logIssue(logMsgDefaultTag, LogMgmt.LEV_ERR, seqEl,
-								"Invalid Number for SequenceInfo (must increase monotonically).", null, null,
-								logMsgSrcId);
-						hasErrors = true;
-
-					} else {
-						if (firstPass[index] != null) {
-							loggingMgr.logIssue(logMsgDefaultTag, LogMgmt.LEV_ERR, seqEl,
-									"Duplicate Number in SequenceInfo", null, null, logMsgSrcId);
-							hasErrors = true;
-						} else {
-							firstPass[index] = nextEl;
-							lastIndex = Math.max(lastIndex, index);
-						}
-					}
-				} else {
-					/*
-					 * Explicit SeqInfo is neither provided nor required so use
-					 * as-is order
-					 */
-					firstPass[i] = nextEl;
-					lastIndex = i;
-				}
-			}
-		}
-		if (hasErrors) {
-			return null;
-		}
-
-		List<Element> childElList = new ArrayList<Element>();
-		/*
-		 * Transfer the Elements from the 'firstPass' array to the List. While
-		 * transferring, check to make sure the SequenceInfo/Number starts with
-		 * one and increases monotonically for each child.
-		 * 
-		 */
-		for (int i = 0; i <= lastIndex; i++)
-
-		{
-			if (firstPass[i] != null) {
-				childElList.add(firstPass[i]);
-			} else {
-				int gap = i + 1;
-				loggingMgr.logIssue(logMsgDefaultTag, LogMgmt.LEV_ERR, parentEl,
-						"Incomplete SequenceInfo... missing Number=" + gap, null, null, logMsgSrcId);
-				hasErrors = true;
-			}
-		}
-		if (hasErrors) {
-			return null;
-		}
-		return childElList;
-
 	}
 
 	public void logIssue(int tag, int level, Object target, String msg, String explanation, LogReference srcRef,
@@ -338,7 +236,7 @@ public abstract class XmlIngester implements IssueLogger {
 			OutputStreamWriter osw = new OutputStreamWriter(new FileOutputStream(outputLoc), "UTF-8");
 			outputter.output(xmlDoc, osw);
 			osw.close();
-		} catch (IOException e) { 
+		} catch (IOException e) {
 			e.printStackTrace();
 			return false;
 		}
@@ -387,7 +285,9 @@ public abstract class XmlIngester implements IssueLogger {
 
 	/**
 	 * Identify the XSD version for the document's <i>primary</i> MDDF namespace
-	 * (i.e., Manifest, Avails, MDMec, etc.)
+	 * (i.e., Manifest, Avails, MDMec, etc.). Version is returned as a string
+	 * that <i>may</i> contain major and minor version identification (e.g.
+	 * '2.1', '1.7.3_rc1')
 	 * 
 	 * @param docRootEl
 	 * @return
@@ -421,25 +321,16 @@ public abstract class XmlIngester implements IssueLogger {
 	 * @throws IllegalArgumentException
 	 */
 	public static void setManifestVersion(String manifestSchemaVer) throws IllegalArgumentException {
-		switch (manifestSchemaVer) {
-		case "1.6":
-			MAN_VER = "1.6";
-			MD_VER = "2.5";
-			break;
-		case "1.5":
-			MAN_VER = "1.5";
-			MD_VER = "2.4";
-			break;
-		case "1.4":
-			MAN_VER = "1.4";
-			MD_VER = "2.3";
-			break;
-		default:
+		FILE_FMT manifestFmt = MddfContext.identifyMddfFormat("manifest", manifestSchemaVer);
+		if(manifestFmt == null){
 			throw new IllegalArgumentException("Unsupported Manifest Schema version " + manifestSchemaVer);
 		}
+		Map<String, String> uses = MddfContext.getReferencedXsdVersions(manifestFmt); 		 
+		MAN_VER = manifestSchemaVer;
+		CM_VER = uses.get("MD");
 		/* Since MDMEC isn't used for Manifest, set to NULL */
 		MDMEC_VER = null;
-		mdNSpace = Namespace.getNamespace("md", "http://www.movielabs.com/schema/md/v" + MD_VER + "/md");
+		mdNSpace = Namespace.getNamespace("md", "http://www.movielabs.com/schema/md/v" + CM_VER + "/md");
 		manifestNSpace = Namespace.getNamespace("manifest",
 				MddfContext.NSPACE_MANIFEST_PREFIX + MAN_VER + MddfContext.NSPACE_MANIFEST_SUFFIX);
 	}
@@ -449,17 +340,17 @@ public abstract class XmlIngester implements IssueLogger {
 	 * @throws IllegalArgumentException
 	 */
 	public static void setMdMecVersion(String mecSchemaVer) throws IllegalArgumentException {
-		switch (mecSchemaVer) {
-		case "2.4":
-		case "2.3":
-			MD_VER = "2.4";
-			break;
-		default:
+		FILE_FMT mecFmt = MddfContext.identifyMddfFormat("mdmec", mecSchemaVer);
+		if(mecFmt == null){
 			throw new IllegalArgumentException("Unsupported MEC Schema version " + mecSchemaVer);
 		}
+		Map<String, String> uses = MddfContext.getReferencedXsdVersions(mecFmt); 		
 		MDMEC_VER = mecSchemaVer;
+		CM_VER = uses.get("MD");
+		/* Since Manifest isn't used for MEC, set to NULL */
+		MAN_VER = null;
 		mdmecNSpace = Namespace.getNamespace("mdmec", "http://www.movielabs.com/schema/mdmec/v" + MDMEC_VER + "/mdmec");
-		mdNSpace = Namespace.getNamespace("md", "http://www.movielabs.com/schema/md/v" + MD_VER + "/md");
+		mdNSpace = Namespace.getNamespace("md", "http://www.movielabs.com/schema/md/v" + CM_VER + "/md");
 	}
 
 	/**
@@ -473,28 +364,20 @@ public abstract class XmlIngester implements IssueLogger {
 	 * @throws IllegalArgumentException
 	 */
 	public static void setAvailVersion(String availSchemaVer) throws IllegalArgumentException {
-		switch (availSchemaVer) {
-		case "2.2.1":
-			MD_VER = "2.5";
-			MDMEC_VER = "2.5";
-			break;
-		case "2.2":
-		case "2.1":
-			MD_VER = "2.4";
-			MDMEC_VER = "2.4";
-			break;
-		case "1.7":
-			MD_VER = "2.3";
-			MDMEC_VER = "2.3";
-			break;
-		default:
+		FILE_FMT availsFmt = MddfContext.identifyMddfFormat("avails", availSchemaVer);
+		if(availsFmt == null){
 			throw new IllegalArgumentException("Unsupported Avails Schema version " + availSchemaVer);
 		}
-		AVAIL_VER = availSchemaVer;
+		Map<String, String> uses = MddfContext.getReferencedXsdVersions(availsFmt); 
+		AVAIL_VER = availSchemaVer; 
+		CM_VER = uses.get("MD");
+		MDMEC_VER = uses.get("MDMEC");
+		/* Since Manifest isn't used for Avails, set to NULL */
+		MAN_VER = null;
 		mdmecNSpace = Namespace.getNamespace("md", "http://www.movielabs.com/schema/mdmec/v" + MDMEC_VER + "/mdmec");
-		mdNSpace = Namespace.getNamespace("md", "http://www.movielabs.com/schema/md/v" + MD_VER + "/md");
+		mdNSpace = Namespace.getNamespace("md", "http://www.movielabs.com/schema/md/v" + CM_VER + "/md");
 		availsNSpace = Namespace.getNamespace("avails",
 				"http://www.movielabs.com/schema/avails/v" + AVAIL_VER + "/avails");
 	}
- 
+
 }

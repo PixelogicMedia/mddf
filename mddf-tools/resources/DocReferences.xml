@@ -72,9 +72,21 @@
 				<RelURL></RelURL>
 			</Version>
 		</Ref>
+		<Ref id="cm_res">
+			<Version id="2.4">
+				<Label>Section 4.1.2</Label>
+				<RelURL></RelURL>
+			</Version>
+		</Ref>
 	</Specification>
 	<Specification id="MMM" label="TR-META-MMM" versions="1.5, 1.6">
 		<!-- Used by ManifestValidator -->
+		<Ref id="metadataAlias">
+			<Version id="1.5">
+				<Label>Section 4.2.7.1</Label>
+				<RelURL></RelURL>
+			</Version>
+		</Ref>
 		<Ref id="mmm001">
 			<Version id="1.5">
 				<Label>Section 6.2</Label>
@@ -120,19 +132,19 @@
 		<!-- Used by ManifestValidator.validateId() -->
 		<Ref id="mmbp01.1">
 			<Version id="1.0">
-				<Label>Section 3.6</Label>
+				<Label>Section 6</Label>
 				<RelURL></RelURL>
 			</Version>
 		</Ref>
 		<Ref id="mmbp01.2">
 			<Version id="1.0">
-				<Label>Section 3.2.1</Label>
+				<Label>Section 5.1</Label>
 				<RelURL></RelURL>
 			</Version>
 		</Ref>
 		<Ref id="mmbp01.3">
 			<Version id="1.0">
-				<Label>Section 3.1.7</Label>
+				<Label>Section 4</Label>
 				<RelURL></RelURL>
 			</Version>
 		</Ref>
@@ -228,6 +240,12 @@
 				<RelURL></RelURL>
 			</Version>
 		</Ref> 
+		<Ref id="struc03" desc="Transaction RefALID">
+			<Version id="2.2">
+				<Label>Section 2.2.3</Label>
+				<RelURL></RelURL>
+			</Version>
+		</Ref> 
 		<Ref id="avail08" desc="termName vocab">
 			<Version id="2.1">
 				<Label>Section 2.2.3.1</Label>
@@ -240,5 +258,14 @@
 				<RelURL></RelURL>
 			</Version>
 		</Ref> 
+	</Specification>
+	<Specification id="CPE" label="TR-CPE-M1" versions="1.0">
+		<!-- Used by CpeValidator -->
+		<Ref id="MData01">
+			<Version id="1.0">
+				<Label>Section 5.1.1</Label>
+				<RelURL></RelURL>
+			</Version>
+		</Ref>
 	</Specification>
 </DocRef>

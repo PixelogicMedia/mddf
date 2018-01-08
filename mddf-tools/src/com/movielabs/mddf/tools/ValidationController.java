@@ -23,16 +23,15 @@ package com.movielabs.mddf.tools;
 import java.io.*;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.EnumSet;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.commons.cli.CommandLine;
-import org.apache.commons.cli.CommandLineParser;
-import org.apache.commons.cli.DefaultParser;
-import org.apache.commons.cli.HelpFormatter;
-import org.apache.commons.cli.Options;
-import org.apache.commons.cli.ParseException;
+import org.apache.poi.POIXMLException;
+import org.apache.poi.openxml4j.exceptions.InvalidFormatException;
 import org.jdom2.Document;
 import org.jdom2.Element;
 import org.jdom2.JDOMException;
@@ -41,27 +40,26 @@ import org.xml.sax.SAXParseException;
 import com.movielabs.mddf.MddfContext;
 import com.movielabs.mddf.MddfContext.FILE_FMT;
 import com.movielabs.mddf.MddfContext.MDDF_TYPE;
-import com.movielabs.mddf.tools.ValidatorTool.Context;
-import com.movielabs.mddf.tools.resources.Foo;
+import com.movielabs.mddf.tools.ValidationController.MddfFileFilter;
 import com.movielabs.mddf.tools.util.logging.AdvLogPanel;
 import com.movielabs.mddf.tools.util.logging.LogNavPanel;
+import com.movielabs.mddflib.Obfuscator;
+import com.movielabs.mddflib.Obfuscator.Target;
 import com.movielabs.mddflib.avails.validation.AvailValidator;
-import com.movielabs.mddflib.avails.xlsx.AvailsWrkBook;
-import com.movielabs.mddflib.avails.xlsx.AvailsSheet;
-import com.movielabs.mddflib.avails.xlsx.AvailsSheet.Version;
+import com.movielabs.mddflib.avails.xml.AvailsSheet;
+import com.movielabs.mddflib.avails.xml.AvailsWrkBook;
 import com.movielabs.mddflib.avails.xml.Pedigree;
 import com.movielabs.mddflib.avails.xml.XmlBuilder;
-import com.movielabs.mddflib.logging.DefaultLogging;
-import com.movielabs.mddflib.logging.Log4jAdapter;
+import com.movielabs.mddflib.avails.xml.AvailsSheet.Version;
 import com.movielabs.mddflib.logging.LogMgmt;
+import com.movielabs.mddflib.manifest.validation.CpeValidator;
 import com.movielabs.mddflib.manifest.validation.ManifestValidator;
 import com.movielabs.mddflib.manifest.validation.MecValidator;
-import com.movielabs.mddflib.manifest.validation.profiles.CpeIP1Validator;
 import com.movielabs.mddflib.manifest.validation.profiles.MMCoreValidator;
 import com.movielabs.mddflib.manifest.validation.profiles.ProfileValidator;
+import com.movielabs.mddflib.util.Translator;
 import com.movielabs.mddflib.util.xml.XmlIngester;
 
-import net.sf.json.JSONArray;
 import net.sf.json.JSONObject;
 
 /**
@@ -80,194 +78,60 @@ import net.sf.json.JSONObject;
  */
 public class ValidationController {
 
+	public class MddfFileFilter implements FileFilter {
+
+		private final String[] okFileExtensions = new String[] { "xml", "xlsx" };
+
+		public boolean accept(File file) {
+			for (String extension : okFileExtensions) {
+				if(file.isDirectory()){
+					return true;
+				}
+				if (file.getName().toLowerCase().endsWith(extension)) {
+					return true;
+				}
+			}
+			System.out.println("Rejecting "+file.getName());
+			return false;
+		}
+
+	}
+
 	public static final String MODULE_ID = "Validator";
-	private static String[] supportedProfiles = null;
-	private static HashMap<String, ProfileValidator> profileMap = null;
-	private static Options options = null;
+	private static File tempDir = new File("./tmp");
+	private static String[] supportedProfiles = { "none", "IP-0", "IP-1", "MMC-1" };
+	private static HashSet<String> supportedProfileKeys;
 
 	private boolean validateS = true;
 	private boolean validateC = true;
 	private boolean validateBP = false;
-	private Context context;
+	private boolean isRecursive = true;
 	private LogMgmt logMgr;
 	private LogNavPanel logNav = null;
+	private EnumSet<FILE_FMT> xportFmts = null;
+	private File exportDir = null;
 
-	/**
-	 * [Implementation DEFERED a/o 2016-04-11] Run preprocesssing functions via
-	 * CLI and/or script.
-	 *
-	 * @param args
-	 * @throws ParseException
-	 */
-	public static void main(String[] args) {
-		CommandLine cmdLine = null;
-		try {
-			cmdLine = loadOptions(args);
-		} catch (ParseException e) {
-			e.printStackTrace();
-			printHelp();
-			System.exit(0);
+	static {
+		supportedProfileKeys = new HashSet<String>();
+		supportedProfileKeys.addAll(Arrays.asList(supportedProfiles));
+		if (!tempDir.exists()) {
+			tempDir.mkdirs();
 		}
-		DefaultLogging logger = new DefaultLogging();
-		configureOptions(cmdLine, logger);
 	}
 
-	/**
-	 * @param cmdLine
-	 */
-	private static void configureOptions(CommandLine cmdLine, LogMgmt logger) {
-		if (cmdLine.hasOption("h")) {
-			printHelp();
-			System.exit(0);
-		}
-		if (cmdLine.hasOption("p")) {
-			String[] profiles = getSupportedProfiles();
-			System.out.println("Supported profiles:\n");
-			for (int i = 0; i < profiles.length; i++) {
-				System.out.println("     " + profiles[i]);
-			}
-		}
-		if (cmdLine.hasOption("logLevel")) {
-			String llValue = cmdLine.getOptionValue("logLevel", "warn");
-			switch (llValue) {
-			case "verbose":
-				logger.setMinLevel(LogMgmt.LEV_DEBUG);
-				break;
-			case "warn":
-				logger.setMinLevel(LogMgmt.LEV_WARN);
-				break;
-			case "error":
-				logger.setMinLevel(LogMgmt.LEV_ERR);
-				break;
-			case "info":
-				logger.setMinLevel(LogMgmt.LEV_INFO);
-				break;
-			}
-		}
-		if(cmdLine.hasOption("s")){
-                      ValidationController controller = new ValidationController(Context.MANIFEST, logger);
-                      try{
-                        File scriptPath = new File(cmdLine.getOptionValue("s"));
-                        controller.runScript(scriptPath);
-                      } catch(IOException e){
-                          e.printStackTrace();
-                      }
-        }
-	}
-
-	/**
-	 * Parse and return command-line arguments.
-	 * 
-	 * @param args
-	 * @return
-	 * @throws ParseException
-	 */
-	private static CommandLine loadOptions(String[] args) throws ParseException {
-		// create the command line parser
-		CommandLineParser parser = new DefaultParser();
-
-		/*
-		 * create the Options. Options represents a collection of Option
-		 * instances, which describe the **POSSIBLE** options for a command-line
-		 */
-		options = new Options();
-		options.addOption("h", "help", false, "Display this HELP file, then exit");
-		options.addOption("v", "version", false, "Display software version and build date");
-		options.addOption("s", "script", true, "Run a script file");
-		options.addOption("l", "logFile", true,
-				"Output file for logging. Default is './validatorLog.xxx' where 'xxx' denotes format");
-		options.addOption("logFormat", true, "Format for log file; valid values are: " + "\n'csv' (DEFAULT)\n 'xml'");
-		options.addOption("logLevel", true,
-				"Filter for logging; valid values are: " + "\n'verbose'\n 'warn' (DEFAULT)\n 'error'\n 'info'");
-		options.addOption("p", "profiles", false, "List supported profiles");
-		options.addOption("useCases", false, "List supported use-case grouped by profile");
-
-		if (args.length == 0) {
-			printHelp();
-			System.exit(0);
-		}
-		// parse the command line arguments
-		CommandLine line = parser.parse(options, args);
-		return line;
-	}
-
-	/**
-	 * 
-	 */
-	private static void printHelp() {
-		HelpFormatter formatter = new HelpFormatter();
-		String header = "\nValidates one or more MovieLabs Digital Distribution Framework (MDDF) files.\n"
-				+ getHelpHeader() + "\n\n";
-		String footer = "\nPlease report issues at http://www.movielabs.com/ or info@movielabs.com";
-		formatter.printHelp("Validator", header, options, footer, true);
-
-	}
-
-	private static String getHelpHeader() {
-		String header = "";
-		Object foo = new Foo();
-		String rsrcPath = "./ValidatorHelp.txt";
-		InputStream in = foo.getClass().getResourceAsStream(rsrcPath);
-		BufferedReader reader = new BufferedReader(new InputStreamReader(in));
-		String line = null;
-		String ls = System.getProperty("line.separator");
-		try {
-			while ((line = reader.readLine()) != null) {
-				header = header + ls + line;
-			}
-		} catch (IOException e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
-		}
-		return header;
-	}
-
-	/**
-	 * get names of all supported Profiles.
-	 * 
-	 * @return
-	 */
 	public static String[] getSupportedProfiles() {
-		/*
-		 * NOTE: This code is a QUICK-AND_DIRTY implementation and needs to be
-		 * re-written.
-		 */
-		if (supportedProfiles == null) {
-			int pCnt = 0;
-			/* use lazy constructor design pattern */
-			List<String> profileList = new ArrayList<String>();
-			profileMap = new HashMap<String, ProfileValidator>();
-			profileList.add("none");
-			profileMap.put("none", null);
-			List<String> mpList;
-			ProfileValidator referenceInstance = new CpeIP1Validator(new DefaultLogging());
-			mpList = referenceInstance.getSupportedProfiles();
-			for (int i = 0; i < mpList.size(); i++) {
-				String nextP = mpList.get(i);
-				profileMap.put(nextP, referenceInstance);
-				profileList.add(nextP);
-			}
-			referenceInstance = new MMCoreValidator(new DefaultLogging());
-			mpList = referenceInstance.getSupportedProfiles();
-			for (int i = 0; i < mpList.size(); i++) {
-				String nextP = mpList.get(i);
-				profileMap.put(nextP, referenceInstance);
-				profileList.add(nextP);
-			}
-			supportedProfiles = new String[profileList.size()];
-			supportedProfiles = profileList.toArray(supportedProfiles);
-		}
 		return supportedProfiles;
 	}
 
 	public static String[] getSupportedUseCases(String profile) {
-		ProfileValidator referenceInstance = profileMap.get(profile);
-		if (referenceInstance != null) {
-			List<String> pucList = referenceInstance.getSupporteUseCases(profile);
-			return pucList.toArray(new String[pucList.size()]);
-		} else {
-			return null;
-		}
+		// ProfileValidator referenceInstance = profileMap.get(profile);
+		// if (referenceInstance != null) {
+		// List<String> pucList =
+		// referenceInstance.getSupporteUseCases(profile);
+		// return pucList.toArray(new String[pucList.size()]);
+		// } else {
+		return null;
+		// }
 	}
 
 	/**
@@ -276,8 +140,7 @@ public class ValidationController {
 	 * 
 	 * @param context
 	 */
-	public ValidationController(Context context, LogMgmt logMgr) {
-		this.context = context;
+	public ValidationController(LogMgmt logMgr) {
 		this.logMgr = logMgr;
 		/*
 		 * Determine if we are running in an interactive mode via a GUI. If so,
@@ -350,51 +213,58 @@ public class ValidationController {
 		}
 
 		// .................
-		JSONArray taskList = null;
-		switch (context) {
-		case AVAILS:
-			setValidation(true, true, false);
-			taskList = validationTasks.optJSONArray("avails");
-			break;
-		case MANIFEST:
-			JSONObject checks = validationTasks.optJSONObject("checks");
-			boolean chk_s = true;
-			boolean check_c = (checks.optString("constraints", "Y").equalsIgnoreCase("Y"));
-			boolean check_bp;
-			if (check_c) {
-				check_bp = (checks.optString("bestPrac", "Y").equalsIgnoreCase("Y"));
-			} else {
-				check_bp = false;
-			}
-			setValidation(chk_s, check_c, check_bp);
-			taskList = validationTasks.optJSONArray("manifests");
-		}
-		// .................
-		if (taskList == null || (taskList.isEmpty())) {
-			return;
-		} else {
-			for (int i = 0; i < taskList.size(); i++) {
-				JSONObject next = taskList.getJSONObject(i);
-				String path = pathPrefix + next.getString("file");
-				// String schema = next.optString("schema", "1.4");
-				String profile = next.optString("profile", "none");
-				// try {
-				validate(path, profile, useCaseList);
-				// } catch (JDOMException e) {
-				// // TODO Auto-generated catch block
-				// e.printStackTrace();
-				// String errMsg = "EXCEPTION processing file " + path + "; " +
-				// e.getLocalizedMessage();
-				// System.out.println(errMsg);
-				// logMgr.log(LogMgmt.LEV_ERR, LogMgmt.TAG_ACTION, errMsg, new
-				// File(path), MODULE_ID);
-				// }
-			}
-		}
+		// JSONArray taskList = null;
+		// switch (context) {
+		// case AVAILS:
+		// setValidation(true, true, false);
+		// taskList = validationTasks.optJSONArray("avails");
+		// break;
+		// case MANIFEST:
+		// JSONObject checks = validationTasks.optJSONObject("checks");
+		// boolean chk_s = true;
+		// boolean check_c = (checks.optString("constraints",
+		// "Y").equalsIgnoreCase("Y"));
+		// boolean check_bp;
+		// if (check_c) {
+		// check_bp = (checks.optString("bestPrac", "Y").equalsIgnoreCase("Y"));
+		// } else {
+		// check_bp = false;
+		// }
+		// setValidation(chk_s, check_c, check_bp);
+		// taskList = validationTasks.optJSONArray("manifests");
+		// }
+		// // .................
+		// if (taskList == null || (taskList.isEmpty())) {
+		// return;
+		// } else {
+		// for (int i = 0; i < taskList.size(); i++) {
+		// JSONObject next = taskList.getJSONObject(i);
+		// String path = pathPrefix + next.getString("file");
+		// // String schema = next.optString("schema", "1.4");
+		// String profile = next.optString("profile", "none");
+		// // try {
+		// validate(path, profile, useCaseList);
+		// // } catch (JDOMException e) {
+		// // // TODO Auto-generated catch block
+		// // e.printStackTrace();
+		// // String errMsg = "EXCEPTION processing file " + path + "; " +
+		// // e.getLocalizedMessage();
+		// // System.out.println(errMsg);
+		// // logMgr.log(LogMgmt.LEV_ERR, LogMgmt.TAG_ACTION, errMsg, new
+		// // File(path), MODULE_ID);
+		// // }
+		// }
+		// }
 		if ((logMgr != null) && (logFile != null)) {
 			File logOutput = new File(logFile);
 			logMgr.saveAs(logOutput, "csv");
 		}
+	}
+
+	public void setTranslations(EnumSet<FILE_FMT> xportFmts, File exportDir) {
+		this.xportFmts = xportFmts;
+		this.exportDir = exportDir;
+
 	}
 
 	/**
@@ -418,8 +288,7 @@ public class ValidationController {
 	public void validate(String srcPath, String uxProfile, List<String> useCases) throws IOException {
 		File srcFile = new File(srcPath);
 		if (srcFile.isDirectory()) {
-			boolean isRecursive = true;
-			File[] inputFiles = srcFile.listFiles();
+			File[] inputFiles = srcFile.listFiles(new MddfFileFilter());
 			int fileCount = inputFiles.length;
 			for (int i = 0; i < fileCount; i++) {
 				File aFile = (File) inputFiles[i];
@@ -450,13 +319,13 @@ public class ValidationController {
 				validateFile(srcFile, uxProfile, useCases);
 			} catch (Exception e) {
 				e.printStackTrace();
-				String msg = e.getMessage();
+				String msg = e.getCause().getMessage();
 				if (msg == null) {
 					msg = "Unspecified Exception while validating";
 				}
 				String loc = e.getStackTrace()[0].toString();
 				String details = "Exception while validating; " + loc;
-				logMgr.log(LogMgmt.LEV_ERR, LogMgmt.TAG_MANIFEST, msg, srcFile, -1, MODULE_ID, details, null);
+				logMgr.log(LogMgmt.LEV_FATAL, LogMgmt.TAG_MANIFEST, msg, srcFile, -1, MODULE_ID, details, null);
 			}
 		}
 	}
@@ -464,13 +333,35 @@ public class ValidationController {
 	protected void validateFile(File srcFile, String uxProfile, List<String> useCases)
 			throws IOException, JDOMException {
 		String fileType = extractFileType(srcFile.getAbsolutePath());
+		fileType = fileType.toLowerCase();
 		if (!(fileType.equals("xml") || fileType.equals("xlsx"))) {
 			// Skipping file: Unsupported file type
+			String errMsg = "Skipping file " + srcFile.getName() + ": Unsupported file type";
+			String supplemental = "File must be of type '.xml' or, if Avails, '.xlsx'";
+			switch (fileType) {
+			case "xls":
+			case "xlt":
+			case "xlm":
+			case "xlsm":
+			case "xltx":
+			case "xltm":
+			case "xlsb":
+			case "xla":
+			case "xlam":
+			case "xll":
+			case "xlw":
+				supplemental = "Avails Excel support restricted to 'xlsx'. All other formats are potential security risk";
+				break;
+			}
+			logMgr.log(LogMgmt.LEV_INFO, LogMgmt.TAG_N_A, errMsg, srcFile, -1, MODULE_ID, supplemental, null);
 			return;
 		}
 		logMgr.setCurrentFile(srcFile);
+		logMgr.log(LogMgmt.LEV_INFO, LogMgmt.TAG_N_A, "Validating " + srcFile.getPath(), srcFile, MODULE_ID);
+
 		Map<Object, Pedigree> pedigreeMap = null;
-		Document xmlDoc = null; 
+		FILE_FMT srcMddfFmt = null;
+		Document xmlDoc = null;
 		if (fileType.equals("xlsx")) {
 			/* The XLSX format is only supported with AVAILS files */
 			Map<String, Object> results = convertSpreadsheet(srcFile);
@@ -482,6 +373,7 @@ public class ValidationController {
 				srcFile = (File) results.get("xlsx");
 				pedigreeMap = (Map<Object, Pedigree>) results.get("pedigree");
 				xmlDoc = (Document) results.get("xml");
+				srcMddfFmt = (FILE_FMT) results.get("srcFmt");
 			}
 		} else if (fileType.equals("xml")) {
 			try {
@@ -493,9 +385,9 @@ public class ValidationController {
 				logMgr.log(LogMgmt.LEV_ERR, LogMgmt.TAG_N_A, errMsg, srcFile, ln, MODULE_ID, supplemental, null);
 				return;
 			}
+			srcMddfFmt = MddfContext.identifyMddfFormat(xmlDoc.getRootElement());
 			if (logNav != null) {
-				FILE_FMT fileFmt = MddfContext.identifyMddfFormat(xmlDoc.getRootElement());
-				logNav.setMddfFormat(srcFile, fileFmt);
+				logNav.setMddfFormat(srcFile, srcMddfFmt);
 			}
 		} else {
 			/*
@@ -505,7 +397,7 @@ public class ValidationController {
 			 */
 			String errMsg = "Skipping file: Unsupported file type";
 			String supplemental = null;
-			logMgr.log(LogMgmt.LEV_DEBUG, LogMgmt.TAG_N_A, errMsg, srcFile, -1, MODULE_ID, supplemental, null);
+			logMgr.log(LogMgmt.LEV_INFO, LogMgmt.TAG_N_A, errMsg, srcFile, -1, MODULE_ID, supplemental, null);
 			return;
 		}
 		XmlIngester.setSourceDirPath(srcFile.getAbsolutePath());
@@ -542,15 +434,42 @@ public class ValidationController {
 		logMgr.log(LogMgmt.LEV_INFO, logTag, "Validating file as a " + schemaType, srcFile, MODULE_ID);
 		switch (mddfType) {
 		case MANIFEST:
-			validateManifest(docRootEl, srcFile, uxProfile, useCases);
+			boolean isValid = validateManifest(docRootEl, srcFile, uxProfile, useCases);
 			break;
 		case AVAILS:
-			boolean isValid = validateAvail(docRootEl, pedigreeMap, srcFile);
+			isValid = validateAvail(docRootEl, pedigreeMap, srcFile);
+			if (!isValid && (fileType.equals("xlsx"))) {
+				File outputLoc = new File(tempDir, "TRACE_" + srcFile.getName().replace("xlsx", "xml"));
+				XmlIngester.writeXml(outputLoc, xmlDoc);
+			}
+			if (isValid) {
+				// Export translated versions??
+				if ((exportDir != null) && (xportFmts != null)) {
+					String baseFileName = trimFileName(srcFile.getName());
+					xportFmts.remove(srcMddfFmt);
+					int cnt = Translator.translateAvails(xmlDoc, xportFmts, exportDir, baseFileName, true, logMgr);
+					logMgr.log(LogMgmt.LEV_INFO, logTag, "Exported in " + cnt + " format(s)", srcFile, MODULE_ID);
+				}
+			}
 			break;
 		case MEC:
 			validateMEC(docRootEl, srcFile);
 			break;
 		}
+	}
+
+	/**
+	 * removes the file-type extension from a file name.
+	 * 
+	 * @param name
+	 * @return
+	 */
+	private String trimFileName(String name) {
+		int trimAt = name.lastIndexOf(".");
+		if (trimAt > 0) {
+			name = name.substring(0, trimAt);
+		}
+		return name;
 	}
 
 	private String extractFileType(String name) {
@@ -562,12 +481,6 @@ public class ValidationController {
 			extension = name.substring(cutPt + 1, name.length());
 		}
 		return extension.toLowerCase();
-	}
-
-	private String changeFileType(String inFileName, String fType) {
-		int ptr = inFileName.lastIndexOf(".xlsx");
-		String changed = inFileName.substring(0, ptr) + "." + fType;
-		return changed;
 	}
 
 	/**
@@ -585,41 +498,65 @@ public class ValidationController {
 	 * @return
 	 */
 	private Map<String, Object> convertSpreadsheet(File xslxFile) {
-		org.apache.logging.log4j.Logger log4j = new Log4jAdapter(logMgr, LogMgmt.TAG_AVAIL, "xlsx Converter");
-		((Log4jAdapter) log4j).setFile(xslxFile);
 		boolean autoCorrect = false;
 		boolean exitOnError = false;
 		AvailsWrkBook ss;
 		try {
-			ss = new AvailsWrkBook(xslxFile, log4j, exitOnError, autoCorrect);
-		} catch (IOException e2) {
-			// TODO Auto-generated catch block
-			e2.printStackTrace();
+			ss = new AvailsWrkBook(xslxFile, logMgr, exitOnError, autoCorrect);
+		} catch (FileNotFoundException e1) {
+			logMgr.log(LogMgmt.LEV_FATAL, LogMgmt.TAG_AVAIL, "File not found", xslxFile, MODULE_ID);
+			return null;
+		} catch (POIXMLException e1) {
+			logMgr.log(LogMgmt.LEV_FATAL, LogMgmt.TAG_AVAIL,
+					"Unable to parse XLSX. Check for comments or embedded objects.", xslxFile, MODULE_ID);
+			return null;
+		} catch (IOException e1) {
+			logMgr.log(LogMgmt.LEV_FATAL, LogMgmt.TAG_AVAIL, "IO Exception when accessing file", xslxFile, MODULE_ID);
+			return null;
+		} catch (InvalidFormatException e) {
+			// POI issue probably due to a missing file
+			String msg = e.getCause().getMessage();
+			e.printStackTrace();
 			return null;
 		}
 		int sheetNum = 0; // KLUDGE for now
 		AvailsSheet as;
 		try {
-			as = ss.addSheet(sheetNum);
-		} catch (Exception e1) {
+			as = ss.ingestSheet(sheetNum);
+		} catch (Exception e) {
 			// TODO Auto-generated catch block
-			e1.printStackTrace();
+			e.printStackTrace();
 			return null;
 		}
 		Version templateVersion = as.getVersion();
+		FILE_FMT srcMddfFmt = null;
+		XmlBuilder xBuilder = new XmlBuilder(logMgr, templateVersion);
 		switch (templateVersion) {
-		case V1_7:
+		case V1_7_2:
+			srcMddfFmt = FILE_FMT.AVAILS_1_7_2;
 			if (logNav != null) {
-				logNav.setMddfFormat(xslxFile, FILE_FMT.AVAILS_1_7);
+				logNav.setMddfFormat(xslxFile, srcMddfFmt);
 			}
+			xBuilder.setVersion("2.2.2");
+			break;
+		case V1_7:
+			srcMddfFmt = FILE_FMT.AVAILS_1_7;
+			if (logNav != null) {
+				logNav.setMddfFormat(xslxFile, srcMddfFmt);
+			}
+			xBuilder.setVersion("2.2");
 			break;
 		case V1_6:
-			if (logNav != null) {
-				logNav.setMddfFormat(xslxFile, FILE_FMT.AVAILS_1_6);
-			}
+			logMgr.log(LogMgmt.LEV_FATAL, LogMgmt.TAG_AVAIL,
+					"Version " + templateVersion + " has been deprecated and is no longer supported", xslxFile,
+					MODULE_ID);
+			return null;
+		case UNK:
+			logMgr.log(LogMgmt.LEV_FATAL, LogMgmt.TAG_AVAIL, "Unable to identify XLSX format ", xslxFile, MODULE_ID);
 			break;
 		default:
-			logMgr.log(LogMgmt.LEV_FATAL, LogMgmt.TAG_AVAIL, "Unable to identify XLSX format ", xslxFile, MODULE_ID);
+			logMgr.log(LogMgmt.LEV_FATAL, LogMgmt.TAG_AVAIL, "Unsupported template version " + templateVersion,
+					xslxFile, MODULE_ID);
 			return null;
 		}
 		logMgr.log(LogMgmt.LEV_INFO, LogMgmt.TAG_AVAIL, "Ingesting XLSX in " + templateVersion + " format", xslxFile,
@@ -627,15 +564,18 @@ public class ValidationController {
 		String inFileName = xslxFile.getName();
 		String timeStamp = new SimpleDateFormat("yyyy.MM.dd.HH.mm.ss").format(new java.util.Date());
 		String shortDesc = String.format("generated XML from %s:Sheet_%s on %s", inFileName, sheetNum, timeStamp);
-		XmlBuilder xBuilder = new XmlBuilder(logMgr, templateVersion);
-		xBuilder.setVersion("2.2");
 		try {
-			Document xmlJDomDoc = xBuilder.makeXmlAsJDom(as, shortDesc);
+			Document xmlJDomDoc = xBuilder.makeXmlAsJDom(as, shortDesc, xslxFile);
+			if (xmlJDomDoc == null) {
+				// Ingest failed
+				return null;
+			}
 			Map<Object, Pedigree> pedigreeMap = xBuilder.getPedigreeMap();
 			Map<String, Object> results = new HashMap<String, Object>();
 			results.put("xlsx", xslxFile);
 			results.put("xml", xmlJDomDoc);
 			results.put("pedigree", pedigreeMap);
+			results.put("srcFmt", srcMddfFmt);
 
 			return results;
 		} catch (Exception e) {
@@ -678,19 +618,61 @@ public class ValidationController {
 		return isValid;
 	}
 
-	protected void validateMEC(Element docRootEl, File srcFile) throws IOException, JDOMException {
+	public void obfuscateAvail(File inFile, File outFile, Map<Target, String> replacementMap) {
+		System.out.println("Obfuscate " + inFile.getName());
+		System.out.println("Output to " + outFile.getName());
+		Document xmlDoc;
+		String fileType = extractFileType(inFile.getAbsolutePath());
+		if (fileType.equals("xlsx")) {
+			Map<String, Object> results = convertSpreadsheet(inFile);
+			if (results == null) {
+				String msg = "Obfuscation failed: Unable to convert Excel to XML";
+				logMgr.log(LogMgmt.LEV_ERR, LogMgmt.TAG_AVAIL, msg, inFile, -1, MODULE_ID, null, null);
+				return;
+			}
+			xmlDoc = (Document) results.get("xml");
+		} else if (fileType.equals("xml")) {
+			try {
+				xmlDoc = XmlIngester.getAsXml(inFile);
+			} catch (SAXParseException e) {
+				int ln = e.getLineNumber();
+				String errMsg = "Processing terminate due to invalid XML on or before line " + e.getLineNumber();
+				String supplemental = e.getMessage();
+				logMgr.log(LogMgmt.LEV_ERR, LogMgmt.TAG_N_A, errMsg, inFile, ln, MODULE_ID, supplemental, null);
+				return;
+			} catch (IOException e) {
+				e.printStackTrace();
+				String errMsg = "Processing terminate due to invalid XML file";
+				String supplemental = e.getMessage();
+				logMgr.log(LogMgmt.LEV_ERR, LogMgmt.TAG_N_A, errMsg, inFile, -1, MODULE_ID, supplemental, null);
+				return;
+			}
+		} else {
+			String errMsg = "File type '" + fileType + "' is not supported";
+			logMgr.log(LogMgmt.LEV_ERR, LogMgmt.TAG_N_A, errMsg, inFile, -1, MODULE_ID, null, null);
+			return;
+		}
+		Document changedDoc = Obfuscator.process(xmlDoc, replacementMap, logMgr);
+		XmlIngester.writeXml(outFile, changedDoc);
+
+		String msg = "Obfuscated output in " + outFile.getAbsolutePath();
+		logMgr.log(LogMgmt.LEV_INFO, LogMgmt.TAG_AVAIL, msg, inFile, -1, MODULE_ID, null, null);
+
+	}
+
+	protected boolean validateMEC(Element docRootEl, File srcFile) throws IOException, JDOMException {
 		boolean isValid = true;
 		MecValidator tool1 = new MecValidator(validateC, logMgr);
 		isValid = tool1.process(srcFile, docRootEl);
 		if (!isValid) {
 			String msg = "Validation FAILED; Terminating processing of file";
 			logMgr.log(LogMgmt.LEV_INFO, LogMgmt.TAG_MEC, msg, srcFile, -1, MODULE_ID, null, null);
-
-			return;
+			return false;
 		}
 		// ----------------------------------------------------------------
 		String msg = "MEC Validation completed";
 		logMgr.log(LogMgmt.LEV_INFO, LogMgmt.TAG_MEC, msg, srcFile, -1, MODULE_ID, null, null);
+		return isValid;
 	}
 
 	/**
@@ -704,7 +686,7 @@ public class ValidationController {
 	 * @throws IOException
 	 * @throws JDOMException
 	 */
-	protected void validateManifest(Element docRootEl, File srcFile, String uxProfile, List<String> useCases)
+	protected boolean validateManifest(Element docRootEl, File srcFile, String uxProfile, List<String> useCases)
 			throws IOException, JDOMException {
 		boolean isValid = true;
 
@@ -712,36 +694,40 @@ public class ValidationController {
 		ManifestValidator.setManifestVersion(schemaVer);
 
 		List<String> profileNameList = identifyProfiles(docRootEl, srcFile, uxProfile);
-		if (profileNameList.isEmpty()) {
+		if (profileNameList.isEmpty() || profileNameList.contains("none")) {
 			ManifestValidator tool1 = new ManifestValidator(validateC, logMgr);
 			isValid = tool1.process(docRootEl, srcFile);
-			return;
-		}
-		for (int i = 0; i < profileNameList.size(); i++) {
-			String profile = profileNameList.get(i);
-			ProfileValidator referenceInstance = profileMap.get(profile);
-			if (referenceInstance == null) {
-				String msg = "Unrecognized Profile: " + profile;
-				logMgr.log(LogMgmt.LEV_DEBUG, LogMgmt.TAG_PROFILE, msg, srcFile, -1, MODULE_ID, null, null);
-			} else {
-				String msg = "Validating compatibility with Profile '" + profile + "'";
-				logMgr.log(LogMgmt.LEV_INFO, LogMgmt.TAG_PROFILE, msg, srcFile, -1, MODULE_ID, null, null);
-				String pvClass = referenceInstance.getClass().getSimpleName();
-				ProfileValidator pValidator = null;
-				switch (pvClass) {
-				case "CpeIP1Validator":
-					pValidator = new CpeIP1Validator(logMgr);
-					break;
-				case "MMCoreValidator":
-					pValidator = new MMCoreValidator(logMgr);
-					break;
+		} else {
+			for (int i = 0; i < profileNameList.size(); i++) {
+				String profile = profileNameList.get(i);
+				// ProfileValidator referenceInstance = profileMap.get(profile);
+				if (!supportedProfileKeys.contains(profile)) {
+					String msg = "Unrecognized Profile: " + profile;
+					logMgr.log(LogMgmt.LEV_DEBUG, LogMgmt.TAG_PROFILE, msg, srcFile, -1, MODULE_ID, null, null);
+				} else {
+					String msg = "Validating compatibility with Profile '" + profile + "'";
+					logMgr.log(LogMgmt.LEV_INFO, LogMgmt.TAG_PROFILE, msg, srcFile, -1, MODULE_ID, null, null);
+					// String pvClass =
+					// referenceInstance.getClass().getSimpleName();
+					ProfileValidator pValidator = null;
+					switch (profile) {
+					case "IP-0":
+					case "IP-01":
+					case "IP-1":
+						pValidator = new CpeValidator(logMgr);
+						break;
+					case "MMC-1":
+						pValidator = new MMCoreValidator(logMgr);
+						break;
+					}
+					isValid = pValidator.process(docRootEl, srcFile, profile, useCases) && isValid;
 				}
-				pValidator.process(docRootEl, srcFile, profile, useCases);
 			}
 		}
 		// ----------------------------------------------------------------
 		String msg = "MANIFEST Validation completed";
 		logMgr.log(LogMgmt.LEV_INFO, LogMgmt.TAG_MANIFEST, msg, srcFile, -1, MODULE_ID, null, null);
+		return isValid;
 	}
 
 	/**
@@ -759,7 +745,6 @@ public class ValidationController {
 	 */
 	private List<String> identifyProfiles(Element docRootEl, File srcFile, String uxProfile) {
 		// make sure data structures got initialized..
-		getSupportedProfiles();
 		List<String> profileNameList = new ArrayList<String>();
 		if (XmlIngester.MAN_VER.endsWith("1.4")) {
 			if (!uxProfile.equals("none")) {
@@ -773,7 +758,7 @@ public class ValidationController {
 			for (int i = 0; i < profileElList.size(); i++) {
 				Element nextProfile = profileElList.get(i);
 				String nextName = nextProfile.getTextNormalize();
-				if (!profileMap.containsKey(nextName)) {
+				if (!supportedProfileKeys.contains(nextName)) {
 					String msg = "Compatibility/Profile specifies unrecognized Profile: " + nextName;
 					logMgr.log(LogMgmt.LEV_ERR, LogMgmt.TAG_PROFILE, msg, srcFile, -1, MODULE_ID, null, null);
 				} else if (!profileNameList.contains(nextName)) {
@@ -782,5 +767,22 @@ public class ValidationController {
 			}
 		}
 		return profileNameList;
+	}
+
+	/**
+	 * @return the isRecursive
+	 */
+	public boolean isRecursive() {
+		return isRecursive;
+	}
+
+	/**
+	 * If <tt>true</tt> processing of a directory will be recursive.
+	 * 
+	 * @param isRecursive
+	 *            the isRecursive to set
+	 */
+	public void setRecursive(boolean isRecursive) {
+		this.isRecursive = isRecursive;
 	}
 }
