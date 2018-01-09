@@ -452,9 +452,10 @@ public class ManifestValidator extends CMValidator {
 			if (containerPath.startsWith("file:")) {
 				String errMsg = "Invalid syntax for local file location";
 				String details = "Location of a local file must be specified as a relative path";
-				logIssue(LogMgmt.TAG_MANIFEST, LogMgmt.LEV_ERR, clocEl, errMsg, details, srcRef, logMsgSrcId);
-				curFileIsValid = false;
-				continue outterLoop;
+				logIssue(LogMgmt.TAG_MANIFEST, LogMgmt.LEV_NOTICE, clocEl, errMsg, details, srcRef, logMsgSrcId);
+				containerPath = containerPath.replace("file:/",".");
+				//curFileIsValid = false;
+				//continue outterLoop;
 			}
 			if (!PathUtilities.isRelative(containerPath)) {
 				// We do not validate absolute or network-based URLs
