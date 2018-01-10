@@ -466,7 +466,7 @@ public class ManifestValidator extends CMValidator {
 				File target = new File(targetLoc);
 				if (!target.exists()) {
 					String errMsg = "Referenced container not found";
-					logIssue(LogMgmt.TAG_MANIFEST, LogMgmt.LEV_WARN, clocEl, errMsg, null, null, logMsgSrcId);
+					logIssue(LogMgmt.TAG_MANIFEST, LogMgmt.LEV_ERR, clocEl, errMsg, null, null, logMsgSrcId);
 					continue outterLoop;
 
 				}
