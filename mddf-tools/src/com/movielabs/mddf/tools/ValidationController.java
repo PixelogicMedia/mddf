@@ -422,9 +422,9 @@ public class ValidationController {
 			logTag = LogMgmt.TAG_MEC;
 			mddfType = MDDF_TYPE.MEC;
 		} else {
-			String errMsg = "Validation terminated: Unable to identify file type.";
-			String supplemental = "Root has unrecognized namespace " + nSpaceUri;
-			logMgr.log(LogMgmt.LEV_ERR, LogMgmt.TAG_N_A, errMsg, srcFile, -1, MODULE_ID, supplemental, null);
+//			String errMsg = "Validation terminated: Unable to identify file type.";
+//			String supplemental = "Root has unrecognized namespace " + nSpaceUri;
+//			logMgr.log(LogMgmt.LEV_ERR, LogMgmt.TAG_N_A, errMsg, srcFile, -1, MODULE_ID, supplemental, null);
 			return;
 		}
 		if (logNav != null) {
