@@ -29,6 +29,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.nio.file.Files;
 
 import org.apache.poi.POIXMLException;
 import org.apache.poi.openxml4j.exceptions.InvalidFormatException;
@@ -268,6 +269,25 @@ public class ValidationController {
 	}
 
 	/**
+	 * Validate a file to be MMC/MEC. It searches the file content as a string
+	 * and checks if it has "manifest:MediaManifest" or  "mdmec:CoreMetadata" as substring.
+	 * If it does then this a valid MMC/MEC file.
+	 *
+	 * @param srcPath
+	 * 				location of a file or a directory containing CMM and/or Avails
+	 *            	files.
+	 */
+
+	protected boolean validateFileContent(File srcFile) throws IOException{
+			String fileContent = new String (Files.readAllBytes(srcFile.toPath()));
+			String mmc = "manifest:MediaManifest";
+			String mec = "mdmec:CoreMetadata";
+			if(fileContent.toLowerCase().contains(mmc.toLowerCase()) || fileContent.toLowerCase().contains(mec.toLowerCase()))
+				return true;
+			return false;
+	}
+
+	/**
 	 * Validate one or more files. The <tt>srcPath</tt> argument indicates a
 	 * either a single Common Media Manifest (CMM) or Avails file or a directory
 	 * containing CMM and/or Avails files. If the later, any file found in the
@@ -376,6 +396,10 @@ public class ValidationController {
 				srcMddfFmt = (FILE_FMT) results.get("srcFmt");
 			}
 		} else if (fileType.equals("xml")) {
+			// Conndition to check only for mmc and mec xml files, No other xmls should be validated (Such as subtitle xmls)
+			boolean isMmcOrMec = validateFileContent(srcFile);
+			if(isMmcOrMec == false)
+				return;
 			try {
 				xmlDoc = XmlIngester.getAsXml(srcFile);
 			} catch (SAXParseException e) {
