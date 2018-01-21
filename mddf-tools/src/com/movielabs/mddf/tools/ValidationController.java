@@ -632,7 +632,7 @@ public class ValidationController {
 		isValid = tool1.process(docRootEl, pedigreeMap, srcFile);
 		if (!isValid) {
 			String msg = "Validation FAILED; Terminating processing of file";
-			logMgr.log(LogMgmt.LEV_INFO, LogMgmt.TAG_AVAIL, msg, srcFile, -1, MODULE_ID, null, null);
+			logMgr.log(LogMgmt.LEV_ERR, LogMgmt.TAG_AVAIL, msg, srcFile, -1, MODULE_ID, null, null);
 
 			return isValid;
 		}
@@ -690,7 +690,7 @@ public class ValidationController {
 		isValid = tool1.process(srcFile, docRootEl);
 		if (!isValid) {
 			String msg = "Validation FAILED; Terminating processing of file";
-			logMgr.log(LogMgmt.LEV_INFO, LogMgmt.TAG_MEC, msg, srcFile, -1, MODULE_ID, null, null);
+			logMgr.log(LogMgmt.LEV_ERR, LogMgmt.TAG_MEC, msg, srcFile, -1, MODULE_ID, null, null);
 			return false;
 		}
 		// ----------------------------------------------------------------
