@@ -69,7 +69,7 @@ public class MecValidator extends CMValidator {
 		// }
 		if (!curFileIsValid) {
 			String msg = "Schema validation check FAILED";
-			loggingMgr.log(LogMgmt.LEV_INFO, logMsgDefaultTag, msg, curFile, logMsgSrcId);
+			loggingMgr.log(LogMgmt.LEV_ERR, logMsgDefaultTag, msg, curFile, logMsgSrcId);
 			// return false;
 		} else {
 			curRootEl = docRootEl; // getAsXml(xmlFile);

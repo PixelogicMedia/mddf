@@ -141,7 +141,7 @@ public class ManifestValidator extends CMValidator {
 		validateXml(xmlManifestFile, docRootEl);
 		if (!curFileIsValid) {
 			String msg = "Schema validation check FAILED";
-			loggingMgr.log(LogMgmt.LEV_INFO, LogMgmt.TAG_MANIFEST, msg, curFile, logMsgSrcId);
+			loggingMgr.log(LogMgmt.LEV_ERR, LogMgmt.TAG_MANIFEST, msg, curFile, logMsgSrcId);
 			return false;
 		}
 		curRootEl = docRootEl;
